@@ -8,13 +8,14 @@ from faultline.models import (
     LifecycleState,
     RootCauseCode,
 )
-from faultline.reasoning import PolicyEngine, StrategyRanker
+from faultline.reasoning import EvidenceEvaluator, PolicyEngine, StrategyRanker
 
 logger = logging.getLogger(__name__)
 
 
 class ValidationError(Exception):
     """Raised when an incident report violates safety, provenance, or consistency invariants."""
+
     pass
 
 
@@ -24,6 +25,7 @@ class ReportValidator:
     def __init__(self, policy: Optional[PolicyEngine] = None) -> None:
         self.policy = policy or PolicyEngine()
         self.ranker = StrategyRanker(self.policy)
+        self.evaluator = EvidenceEvaluator(self.policy)
 
     def validate(self, result: AnalysisResult) -> bool:
         """Validate complete AnalysisResult against all domain and safety invariants."""
@@ -48,6 +50,7 @@ class ReportValidator:
                 raise ValidationError(f"Malformed evidence ID: {eid}")
 
         ledger_id_set = set(evidence_ids)
+        obs_by_id = {obs.id: obs for obs in result.evidence}
 
         # 4. Check conflict citations and cross-source requirement
         if not result.conflicts:
@@ -64,11 +67,9 @@ class ReportValidator:
             cited_obs = [obs for obs in result.evidence if obs.id in conflict.evidence_ids]
             cited_groups = {obs.source_group for obs in cited_obs}
             if len(cited_groups) < 2:
-                raise ValidationError(
-                    f"Conflict {conflict.id} does not span independent source groups: {cited_groups}"
-                )
+                raise ValidationError(f"Conflict {conflict.id} does not span independent source groups: {cited_groups}")
 
-        # 5. Check hypotheses validity and closed catalogue compliance
+        # 5. Check hypotheses validity, closed catalogue compliance, and policy signal-rule matching
         allowed_cause_values = {c.value for c in RootCauseCode}
         if not result.hypotheses:
             raise ValidationError("Analysis report contains no evaluated hypotheses.")
@@ -81,11 +82,34 @@ class ReportValidator:
             if hyp.net_evidence_score > 0:
                 has_positive_evidence = True
 
-            # Verify all observation citations exist in ledger
-            for obs_score in hyp.supporting_observations + hyp.opposing_observations:
+            rules = self.policy.cause_rules.get(hyp.cause_code, [])
+
+            # Verify supporting observations match policy signal rules
+            for obs_score in hyp.supporting_observations:
                 if obs_score.evidence_id not in ledger_id_set:
                     raise ValidationError(
                         f"Hypothesis {hyp.cause_code.value} cites invalid evidence ID: {obs_score.evidence_id}"
+                    )
+                obs = obs_by_id[obs_score.evidence_id]
+                matched = self.evaluator._match_rule(obs, rules)
+                if not matched or matched.get("relationship") != "supports":
+                    raise ValidationError(
+                        f"Hypothesis {hyp.cause_code.value} cites observation {obs.id} as supporting, "
+                        f"but policy defines it as {matched.get('relationship') if matched else 'unrelated'}."
+                    )
+
+            # Verify opposing observations match policy signal rules
+            for obs_score in hyp.opposing_observations:
+                if obs_score.evidence_id not in ledger_id_set:
+                    raise ValidationError(
+                        f"Hypothesis {hyp.cause_code.value} cites invalid evidence ID: {obs_score.evidence_id}"
+                    )
+                obs = obs_by_id[obs_score.evidence_id]
+                matched = self.evaluator._match_rule(obs, rules)
+                if not matched or matched.get("relationship") != "opposes":
+                    raise ValidationError(
+                        f"Hypothesis {hyp.cause_code.value} cites observation {obs.id} as opposing, "
+                        f"but policy defines it as {matched.get('relationship') if matched else 'unrelated'}."
                     )
 
         if not has_positive_evidence:
@@ -105,7 +129,7 @@ class ReportValidator:
         for idx, (actual, expected) in enumerate(zip(result.strategy_ranking, expected_ranking)):
             if actual.strategy_id != expected.strategy_id:
                 raise ValidationError(
-                    f"Strategy ranking mismatch at position {idx+1}: reported '{actual.strategy_id}', "
+                    f"Strategy ranking mismatch at position {idx + 1}: reported '{actual.strategy_id}', "
                     f"expected '{expected.strategy_id}'."
                 )
             if abs(actual.final_score - expected.final_score) > 0.05:
@@ -114,9 +138,11 @@ class ReportValidator:
                     f"expected {expected.final_score}."
                 )
             if actual.rank != (idx + 1):
-                raise ValidationError(f"Strategy {actual.strategy_id} rank field is inconsistent: {actual.rank} vs {idx+1}")
+                raise ValidationError(
+                    f"Strategy {actual.strategy_id} rank field is inconsistent: {actual.rank} vs {idx + 1}"
+                )
 
-        # 7. Check recommendation consistency & semantic grounding
+        # 7. Check recommendation consistency & structured semantic grounding
         top_strategy = result.strategy_ranking[0]
         rec = result.recommendation
 
@@ -126,7 +152,7 @@ class ReportValidator:
                 f"but rank #1 strategy is '{top_strategy.strategy_id}'."
             )
 
-        # Grounding: Executive summary must reference the winning strategy or top cause
+        # Grounding: Executive summary must reference the winning strategy
         exec_summary_lower = rec.executive_summary.lower()
         if (
             top_strategy.name.lower() not in exec_summary_lower
@@ -145,6 +171,43 @@ class ReportValidator:
         if not alt_strategy:
             raise ValidationError(f"Trade-off comparison cites unknown alternative strategy: {alt_id}")
 
+        # Structured Grounding Verification
+        if rec.grounding:
+            g = rec.grounding
+            if g.winning_strategy_id != top_strategy.strategy_id:
+                raise ValidationError(
+                    f"Structured grounding winning strategy mismatch: {g.winning_strategy_id} vs {top_strategy.strategy_id}"
+                )
+            if g.alternative_strategy_id != alt_strategy.strategy_id:
+                raise ValidationError(
+                    f"Structured grounding alternative strategy mismatch: {g.alternative_strategy_id} vs {alt_strategy.strategy_id}"
+                )
+            if g.alternative_advantage_dimension == "speed":
+                if alt_strategy.speed <= top_strategy.speed:
+                    raise ValidationError(
+                        f"Structured grounding claims speed advantage ({alt_strategy.speed}) for alternative, "
+                        f"but winner has equal or higher speed ({top_strategy.speed})."
+                    )
+            elif g.alternative_advantage_dimension == "affordability":
+                if alt_strategy.affordability <= top_strategy.affordability:
+                    raise ValidationError(
+                        f"Structured grounding claims affordability advantage ({alt_strategy.affordability}) for alternative, "
+                        f"but winner has equal or higher affordability ({top_strategy.affordability})."
+                    )
+            elif g.alternative_advantage_dimension == "safety":
+                if alt_strategy.safety <= top_strategy.safety:
+                    raise ValidationError(
+                        f"Structured grounding claims safety advantage ({alt_strategy.safety}) for alternative, "
+                        f"but winner has equal or higher safety ({top_strategy.safety})."
+                    )
+
+            # Assert advantage in narrative does not falsely claim superior metric
+            alt_adv_narrative = rec.trade_off_comparison.alternative_advantage.lower()
+            if "speed" in alt_adv_narrative and alt_strategy.speed < top_strategy.speed:
+                raise ValidationError(
+                    f"Narrative falsely claims speed advantage for alternative with speed {alt_strategy.speed} vs winner {top_strategy.speed}."
+                )
+
         # Grounding: Rejection rationale must articulate why the alternative is unsuitable
         rejection_lower = rec.trade_off_comparison.rejection_rationale.lower()
         if len(rejection_lower.split()) < 8:
@@ -155,7 +218,6 @@ class ReportValidator:
         if not contradiction_text or len(contradiction_text.split()) < 10:
             raise ValidationError("Grounded contradiction analysis is missing or insufficiently detailed.")
 
-        # Verify that contradiction analysis references actual conflict IDs, evidence IDs, or domain scopes
         detected_conflict_ids = {c.id.lower() for c in result.conflicts}
         detected_evidence_ids = {eid.lower() for c in result.conflicts for eid in c.evidence_ids}
         detected_components = {c.component.value.lower() for c in result.conflicts}
@@ -198,8 +260,8 @@ class ReportValidator:
         expected_cmd = winning_strat_def.get("suggested_command")
         if expected_cmd and result.execution.suggested_command != expected_cmd:
             raise ValidationError(
-                f"Execution suggested_command mismatch: expected command for '{top_strategy.strategy_id}', "
-                f"got '{result.execution.suggested_command}'."
+                f"Execution command mismatch: reported '{result.execution.suggested_command}', "
+                f"expected '{expected_cmd}' for strategy {top_strategy.strategy_id}."
             )
 
         return True

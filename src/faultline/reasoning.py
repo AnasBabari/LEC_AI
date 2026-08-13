@@ -44,6 +44,15 @@ class PolicyEngine:
         self.cause_catalogue = self.policy_data["cause_catalogue"]
         self.strategies = self.policy_data["strategies"]
 
+    @property
+    def cause_rules(self) -> dict[RootCauseCode, list[dict[str, Any]]]:
+        """Map each RootCauseCode to its list of signal rules from the catalogue."""
+        result: dict[RootCauseCode, list[dict[str, Any]]] = {}
+        for code in RootCauseCode:
+            cause_def = self.cause_catalogue.get(code.value, {})
+            result[code] = cause_def.get("signal_rules", [])
+        return result
+
 
 class ConflictDetector:
     """Identifies and categorizes diagnostic conflicts across independent source groups."""
@@ -77,9 +86,7 @@ class ConflictDetector:
                     if obs_a.source_group == obs_b.source_group:
                         continue
 
-                    conflict = ConflictDetector._evaluate_pair(
-                        obs_a, obs_b, conflict_id=f"CONF-{conflict_idx:03d}"
-                    )
+                    conflict = ConflictDetector._evaluate_pair(obs_a, obs_b, conflict_id=f"CONF-{conflict_idx:03d}")
                     if conflict:
                         conflicts.append(conflict)
                         conflict_idx += 1
@@ -103,9 +110,7 @@ class ConflictDetector:
             return None
 
         # Check temporal overlap
-        windows_overlap = (obs_a.window_start <= obs_b.window_end) and (
-            obs_b.window_start <= obs_a.window_end
-        )
+        windows_overlap = (obs_a.window_start <= obs_b.window_end) and (obs_b.window_start <= obs_a.window_end)
 
         if not windows_overlap:
             return Conflict(
@@ -235,27 +240,35 @@ class EvidenceEvaluator:
 
             draft = draft_map.get(code)
             summary_val = draft.summary if draft else cause_def["description"]
-            causal_chain_val = draft.causal_chain if draft else [
-                f"Trigger root cause: {cause_def['name']}",
-                "Cascades through intermediate service layers",
-                "Surfaces as operational latency and connection exhaustion"
-            ]
-            uncertainties_val = draft.unresolved_uncertainties if draft else [
-                f"Remaining uncertainty regarding exact propagation dynamics of {cause_def['name']}."
-            ]
+            causal_chain_val = (
+                draft.causal_chain
+                if draft
+                else [
+                    f"Trigger root cause: {cause_def['name']}",
+                    "Cascades through intermediate service layers",
+                    "Surfaces as operational latency and connection exhaustion",
+                ]
+            )
+            uncertainties_val = (
+                draft.unresolved_uncertainties
+                if draft
+                else [f"Remaining uncertainty regarding exact propagation dynamics of {cause_def['name']}."]
+            )
 
-            temp_evaluations.append({
-                "cause_code": code,
-                "name": cause_def["name"],
-                "summary": summary_val,
-                "causal_chain": causal_chain_val,
-                "supporting_observations": supporting_scored,
-                "opposing_observations": opposing_scored,
-                "supporting_score": float(support_total),
-                "opposing_score": float(oppose_total),
-                "net_evidence_score": net_score,
-                "unresolved_uncertainties": uncertainties_val,
-            })
+            temp_evaluations.append(
+                {
+                    "cause_code": code,
+                    "name": cause_def["name"],
+                    "summary": summary_val,
+                    "causal_chain": causal_chain_val,
+                    "supporting_observations": supporting_scored,
+                    "opposing_observations": opposing_scored,
+                    "supporting_score": float(support_total),
+                    "opposing_score": float(oppose_total),
+                    "net_evidence_score": net_score,
+                    "unresolved_uncertainties": uncertainties_val,
+                }
+            )
 
         # Calculate decision weights (normalized over positive net scores)
         total_positive_net = sum(raw_net_scores.values())
@@ -320,6 +333,51 @@ class EvidenceEvaluator:
         if diff_seconds <= self.policy.freshness_thresholds["recent_max"]:
             return self.policy.freshness_weights["recent"]
         return self.policy.freshness_weights["stale"]
+
+    def validate_hypothesis_citations(
+        self,
+        draft: HypothesisDraft,
+        observations: list[EvidenceObservation],
+    ) -> tuple[bool, list[str]]:
+        """Strictly validate that draft citations match policy cause signal rules.
+
+        - Supporting citations must match a rule with relationship == 'supports'.
+        - Opposing citations must match a rule with relationship == 'opposes'.
+        - Citations that do not match any rule, or have an inverted relationship, are rejected.
+        """
+        obs_map = {obs.id: obs for obs in observations}
+        rules = self.policy.cause_rules.get(draft.cause_code, [])
+        errors: list[str] = []
+
+        for sup_id in draft.supporting_evidence_ids:
+            obs = obs_map.get(sup_id)
+            if not obs:
+                errors.append(f"Non-existent supporting citation '{sup_id}' for {draft.cause_code.value}")
+                continue
+            matched = self._match_rule(obs, rules)
+            if not matched:
+                errors.append(
+                    f"Observation '{sup_id}' ({obs.component.value}:{obs.signal}) does not match any policy rule for {draft.cause_code.value}"
+                )
+            elif matched.get("relationship") != "supports":
+                errors.append(
+                    f"Observation '{sup_id}' is an opposing signal for {draft.cause_code.value}, cannot be cited as supporting"
+                )
+
+        for opp_id in draft.opposing_evidence_ids:
+            obs = obs_map.get(opp_id)
+            if not obs:
+                errors.append(f"Non-existent opposing citation '{opp_id}' for {draft.cause_code.value}")
+                continue
+            matched = self._match_rule(obs, rules)
+            if not matched:
+                errors.append(f"Observation '{opp_id}' does not match any policy rule for {draft.cause_code.value}")
+            elif matched.get("relationship") != "opposes":
+                errors.append(
+                    f"Observation '{opp_id}' is a supporting signal for {draft.cause_code.value}, cannot be cited as opposing"
+                )
+
+        return (len(errors) == 0, errors)
 
     def _match_rule(
         self,
@@ -426,14 +484,16 @@ class StrategyRanker:
                 + (w_affordability * affordability)
             )
 
-            intermediate.append((
-                final_score,
-                expected_impact,
-                safety,
-                speed,
-                strat_id,
-                strat_def,
-            ))
+            intermediate.append(
+                (
+                    final_score,
+                    expected_impact,
+                    safety,
+                    speed,
+                    strat_id,
+                    strat_def,
+                )
+            )
 
         # Deterministic sorting using full-precision unrounded floats:
         # 1. Higher unrounded final_score

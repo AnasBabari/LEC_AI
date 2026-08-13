@@ -11,6 +11,7 @@ from faultline.models import (
     FaultReport,
     HypothesisDraft,
     HypothesisDraftSet,
+    ObservationEvidenceScore,
     RootCauseCode,
 )
 from faultline.orchestrator import IncidentOrchestrator, OrchestratorError
@@ -95,7 +96,7 @@ def test_validator_rejects_mismatched_execution_command() -> None:
     result.execution.suggested_command = "kubectl delete pod --all"
 
     validator = ReportValidator()
-    with pytest.raises(ValidationError, match="Execution suggested_command mismatch"):
+    with pytest.raises(ValidationError, match="Execution command mismatch|Execution suggested_command mismatch"):
         validator.validate(result)
 
 
@@ -133,12 +134,14 @@ def test_validator_rejects_ungrounded_summary() -> None:
 
 def test_orchestrator_rejects_fabricated_model_citation() -> None:
     """Orchestrator immediately catches and rejects fabricated EV-999 citations from model."""
+
     class MaliciousModelProvider(FakeGeminiProvider):
         def synthesise_hypotheses(
             self,
             incident: FaultReport,
             evidence_ledger: list,
             allowed_causes: list,
+            session: object = None,
         ) -> HypothesisDraftSet:
             return HypothesisDraftSet(
                 hypotheses=[
@@ -160,35 +163,49 @@ def test_orchestrator_rejects_fabricated_model_citation() -> None:
             )
 
     orchestrator = IncidentOrchestrator(provider=MaliciousModelProvider())
-    with pytest.raises(OrchestratorError, match="Fabricated evidence citations"):
+    with pytest.raises(
+        OrchestratorError, match="Ungrounded or invalid evidence citations|Fabricated evidence citations"
+    ):
         orchestrator.analyze_scenario("cache_invalidation_lag")
 
 
 def test_model_shortlist_variation_preserves_deterministic_winner() -> None:
     """Verifies that differing candidate shortlists cannot change the winning repair strategy."""
+
     class SubsetModelProvider(FakeGeminiProvider):
         def synthesise_hypotheses(
             self,
             incident: FaultReport,
             evidence_ledger: list,
             allowed_causes: list,
+            session: object = None,
         ) -> HypothesisDraftSet:
-            # Model shortlists only 2 causes
+            # Model shortlists only 2 causes with valid citations
+            queue_ids = [obs.id for obs in evidence_ledger if obs.component.value == "message_queue"]
+            db_workload_ids = [
+                obs.id for obs in evidence_ledger if obs.component.value == "database" and obs.scope == "workload"
+            ]
+            db_probe_ids = [
+                obs.id
+                for obs in evidence_ledger
+                if obs.component.value == "database" and obs.scope == "synthetic_probe"
+            ]
+
             return HypothesisDraftSet(
                 hypotheses=[
                     HypothesisDraft(
                         cause_code=RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
                         summary="Consumer stalled",
                         causal_chain=["Step A", "Step B"],
-                        supporting_evidence_ids=["EV-001", "EV-002"],
+                        supporting_evidence_ids=queue_ids,
                         opposing_evidence_ids=[],
                     ),
                     HypothesisDraft(
                         cause_code=RootCauseCode.DATABASE_CAPACITY_DEGRADATION,
                         summary="DB degradation",
                         causal_chain=["Step B", "Step C"],
-                        supporting_evidence_ids=["EV-002"],
-                        opposing_evidence_ids=["EV-004"],
+                        supporting_evidence_ids=db_workload_ids,
+                        opposing_evidence_ids=db_probe_ids,
                     ),
                 ]
             )
@@ -216,7 +233,6 @@ def test_strategy_ranker_unrounded_precision_sorting() -> None:
     policy = PolicyEngine()
     ranker = StrategyRanker(policy)
 
-    # Mock evaluated hypothesis with synthetic score
     hyp = EvaluatedHypothesis(
         cause_code=RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
         name="Cache Invalidation Consumer Stalled",
@@ -238,6 +254,110 @@ def test_strategy_ranker_unrounded_precision_sorting() -> None:
     for idx, strat in enumerate(ranked, start=1):
         assert strat.rank == idx
     assert ranked[0].strategy_id == "RECOVER_CONSUMER_AND_DRAIN"
+
+
+def test_precision_tiebreaker_ranks_higher_unrounded_score_over_lexicographical_id() -> None:
+    """When two strategies round to the same display score (e.g. 2.500 vs 2.504),
+    the strategy with the higher unrounded score strictly ranks first, even if its ID
+    is lexicographically later."""
+    policy = PolicyEngine()
+    ranker = StrategyRanker(policy)
+
+    # Custom strategy weights: ZZZ strategy has 2.504 / 0.60 and AAA strategy has 2.500 / 0.60
+    policy.strategies = {
+        "AAA_LOWER": {
+            "name": "Strategy AAA (2.500)",
+            "description": "Lower precision strategy",
+            "effectiveness_by_cause": {"CACHE_INVALIDATION_CONSUMER_STALLED": 2.500 / 0.60},
+            "safety": 0.0,
+            "speed": 0.0,
+            "affordability": 0.0,
+            "risk_notes": "None",
+            "reversibility": "High",
+            "suggested_command": "echo aaa",
+            "preconditions": [],
+        },
+        "ZZZ_HIGHER": {
+            "name": "Strategy ZZZ (2.504)",
+            "description": "Higher precision strategy",
+            "effectiveness_by_cause": {"CACHE_INVALIDATION_CONSUMER_STALLED": 2.504 / 0.60},
+            "safety": 0.0,
+            "speed": 0.0,
+            "affordability": 0.0,
+            "risk_notes": "None",
+            "reversibility": "High",
+            "suggested_command": "echo zzz",
+            "preconditions": [],
+        },
+    }
+
+    hyp = EvaluatedHypothesis(
+        cause_code=RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
+        name="Test",
+        summary="Test",
+        causal_chain=["Step 1"],
+        supporting_observations=[],
+        opposing_observations=[],
+        supporting_score=10.0,
+        opposing_score=0.0,
+        net_evidence_score=10.0,
+        decision_weight=100.0,
+        strength_band=EvidenceStrengthBand.STRONG,
+        unresolved_uncertainties=[],
+    )
+
+    ranked = ranker.rank_strategies([hyp])
+    assert len(ranked) == 2
+    assert ranked[0].strategy_id == "ZZZ_HIGHER"
+    assert ranked[0].rank == 1
+    assert ranked[1].strategy_id == "AAA_LOWER"
+    assert ranked[1].rank == 2
+    # Check that both round to 2.50 for two decimal display
+    assert round(ranked[0].final_score, 2) == 2.50
+    assert round(ranked[1].final_score, 2) == 2.50
+
+
+def test_validator_rejects_inverted_supporting_opposing_citation() -> None:
+    """Validator rejects hypothesis citing an opposing metric as supporting."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    # Invert an observation in hypothesis
+    healthy_db_ping = next(
+        obs for obs in result.evidence if obs.signal == "db_synthetic_direct_probe" and obs.status.value == "healthy"
+    )
+    inverted_score = ObservationEvidenceScore(
+        evidence_id=healthy_db_ping.id,
+        source_group=healthy_db_ping.source_group,
+        component=healthy_db_ping.component,
+        signal=healthy_db_ping.signal,
+        reliability_score=1,
+        freshness_score=1,
+        directness_score=1,
+        total_strength=1,
+        relationship="supports",
+    )
+    result.hypotheses[0].supporting_observations.append(inverted_score)
+
+    validator = ReportValidator()
+    with pytest.raises(ValidationError, match=r"policy defines it as (opposes|unrelated)"):
+        validator.validate(result)
+
+
+def test_validator_rejects_false_advantage_claim_in_grounding() -> None:
+    """Validator rejects structured grounding claiming safety advantage when alternative has lower safety."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    assert result.recommendation.grounding is not None
+    # Tamper grounding to claim safety advantage when alternative has lower safety than winner
+    result.recommendation.grounding.alternative_advantage_dimension = "safety"
+
+    validator = ReportValidator()
+    with pytest.raises(ValidationError, match="claims safety advantage .* but winner has equal or higher"):
+        validator.validate(result)
 
 
 def test_scenario_path_traversal_protection() -> None:
