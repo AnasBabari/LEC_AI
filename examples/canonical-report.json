@@ -1,0 +1,945 @@
+{
+  "run_id": "RUN-A564205D",
+  "scenario_id": "cache_invalidation_lag",
+  "state": "VALIDATED",
+  "incident": {
+    "title": "Degraded Database Latency with Stale Cache and Stalled Invalidation Queue",
+    "description": "Production alerts report spiking API Gateway p99 response times and severe database connection pool saturation. Primary database telemetry suggests database strain, but synthetic probes report the database engine is completely healthy while the cache invalidation queue is accumulating a large unconsumed backlog.",
+    "headline": "High API Gateway p99 Latency (2400ms) & DB Connection Pool Saturation (92%)",
+    "severity": "CRITICAL",
+    "reported_at": "2026-08-13T10:00:00+00:00",
+    "details": "User-facing services report checkout latency spikes. Initial alert indicates database exhaustion.",
+    "affected_components": [
+      "api_gateway",
+      "database",
+      "cache",
+      "message_queue"
+    ]
+  },
+  "model_execution": {
+    "configured_primary_model": "gemini-3.6-flash",
+    "configured_fallback_model": null,
+    "model_used": "gemini-3.6-flash",
+    "thinking_level": "medium",
+    "fallback_occurred": false,
+    "fallback_reason": null,
+    "prompt_tokens": 420,
+    "completion_tokens": 280
+  },
+  "investigation_trace": [
+    {
+      "round_index": 0,
+      "action_type": "state_change",
+      "timestamp": "2026-08-13T19:12:19.793234Z",
+      "tool_name": null,
+      "summary": "Incident alert received: High API Gateway p99 Latency (2400ms) & DB Connection Pool Saturation (92%) (Severity: CRITICAL)",
+      "details": {
+        "scenario_id": "cache_invalidation_lag",
+        "run_id": "RUN-A564205D"
+      }
+    },
+    {
+      "round_index": 1,
+      "action_type": "model_reasoning",
+      "timestamp": "2026-08-13T19:12:19.793317Z",
+      "tool_name": null,
+      "summary": "Agent evaluated diagnostic state: requested 2 tool(s).",
+      "details": {
+        "investigation_complete": false,
+        "tool_calls": [
+          {
+            "tool_name": "query_telemetry",
+            "arguments": {},
+            "reasoning": "Collect active workload telemetry across API gateway, database, and cache layers."
+          },
+          {
+            "tool_name": "run_health_probes",
+            "arguments": {},
+            "reasoning": "Execute independent synthetic health probes to isolate infrastructure vs workload strain."
+          }
+        ]
+      }
+    },
+    {
+      "round_index": 1,
+      "action_type": "tool_result",
+      "timestamp": "2026-08-13T19:12:19.793440Z",
+      "tool_name": "query_telemetry",
+      "summary": "Executed 'query_telemetry': Retrieved 3 telemetry metrics across 3 components.",
+      "details": {
+        "source_group": "telemetry",
+        "observations_count": 3,
+        "records": [
+          {
+            "id": "EV-001",
+            "source_group": "telemetry",
+            "source": "query_telemetry",
+            "component": "api_gateway",
+            "signal": "gateway_p99_latency",
+            "dimension": "latency",
+            "status": "degraded",
+            "value": 2400.0,
+            "unit": "ms",
+            "observed_at": "2026-08-13T09:59:00Z",
+            "window_start": "2026-08-13T09:54:00Z",
+            "window_end": "2026-08-13T09:59:00Z",
+            "scope": "workload",
+            "reliability": "aggregated",
+            "details": "Ingress API Gateway 99th percentile response time elevated from 45ms baseline to 2400ms."
+          },
+          {
+            "id": "EV-002",
+            "source_group": "telemetry",
+            "source": "query_telemetry",
+            "component": "database",
+            "signal": "db_workload_connection_saturation",
+            "dimension": "latency",
+            "status": "degraded",
+            "value": 92.0,
+            "unit": "percent",
+            "observed_at": "2026-08-13T09:59:00Z",
+            "window_start": "2026-08-13T09:54:00Z",
+            "window_end": "2026-08-13T09:59:00Z",
+            "scope": "workload",
+            "reliability": "aggregated",
+            "details": "Active application database connection pool at 92% capacity; average query latency under production workload rose to 185ms."
+          },
+          {
+            "id": "EV-003",
+            "source_group": "telemetry",
+            "source": "query_telemetry",
+            "component": "cache",
+            "signal": "cache_hit_ratio",
+            "dimension": "availability",
+            "status": "degraded",
+            "value": 34.2,
+            "unit": "percent",
+            "observed_at": "2026-08-13T09:59:00Z",
+            "window_start": "2026-08-13T09:54:00Z",
+            "window_end": "2026-08-13T09:59:00Z",
+            "scope": "workload",
+            "reliability": "aggregated",
+            "details": "Cache hit ratio collapsed from normal 92% to 34.2%, causing massive cache-miss traffic storm directly to database."
+          }
+        ],
+        "summary": "Retrieved 3 telemetry metrics across 3 components."
+      }
+    },
+    {
+      "round_index": 1,
+      "action_type": "tool_result",
+      "timestamp": "2026-08-13T19:12:19.793503Z",
+      "tool_name": "run_health_probes",
+      "summary": "Executed 'run_health_probes': Executed synthetic health probes: 3 probe results recorded.",
+      "details": {
+        "source_group": "health_probe",
+        "observations_count": 3,
+        "records": [
+          {
+            "id": "EV-004",
+            "source_group": "health_probe",
+            "source": "run_health_probes",
+            "component": "database",
+            "signal": "db_synthetic_direct_probe",
+            "dimension": "latency",
+            "status": "healthy",
+            "value": 1.8,
+            "unit": "ms",
+            "observed_at": "2026-08-13T09:59:00Z",
+            "window_start": "2026-08-13T09:58:00Z",
+            "window_end": "2026-08-13T09:59:00Z",
+            "scope": "synthetic_probe",
+            "reliability": "verified",
+            "details": "Direct synthetic query probe (indexed lookup & SELECT 1) executing in 1.8ms; DB CPU at 18%, I/O healthy, no lock contention."
+          },
+          {
+            "id": "EV-005",
+            "source_group": "health_probe",
+            "source": "run_health_probes",
+            "component": "cache",
+            "signal": "cache_cluster_ping",
+            "dimension": "availability",
+            "status": "healthy",
+            "value": 0.5,
+            "unit": "ms",
+            "observed_at": "2026-08-13T09:59:00Z",
+            "window_start": "2026-08-13T09:58:00Z",
+            "window_end": "2026-08-13T09:59:00Z",
+            "scope": "synthetic_probe",
+            "reliability": "verified",
+            "details": "Cache cluster nodes responding to TCP health pings in 0.5ms; cluster memory and process status fully operational."
+          },
+          {
+            "id": "EV-006",
+            "source_group": "health_probe",
+            "source": "run_health_probes",
+            "component": "api_gateway",
+            "signal": "gateway_health_endpoint",
+            "dimension": "availability",
+            "status": "healthy",
+            "value": 200.0,
+            "unit": "http_status",
+            "observed_at": "2026-08-13T09:59:00Z",
+            "window_start": "2026-08-13T09:58:00Z",
+            "window_end": "2026-08-13T09:59:00Z",
+            "scope": "synthetic_probe",
+            "reliability": "verified",
+            "details": "Gateway internal /healthz endpoint responding with HTTP 200 in 2.1ms."
+          }
+        ],
+        "summary": "Executed synthetic health probes: 3 probe results recorded."
+      }
+    },
+    {
+      "round_index": 2,
+      "action_type": "model_reasoning",
+      "timestamp": "2026-08-13T19:12:19.793523Z",
+      "tool_name": null,
+      "summary": "Agent evaluated diagnostic state: requested 1 tool(s).",
+      "details": {
+        "investigation_complete": false,
+        "tool_calls": [
+          {
+            "tool_name": "fetch_operational_events",
+            "arguments": {},
+            "reasoning": "Fetch message queue worker heartbeats, backlog depth, and eviction logs to explain stale cache."
+          }
+        ]
+      }
+    },
+    {
+      "round_index": 2,
+      "action_type": "tool_result",
+      "timestamp": "2026-08-13T19:12:19.793579Z",
+      "tool_name": "fetch_operational_events",
+      "summary": "Executed 'fetch_operational_events': Retrieved 3 operational event records.",
+      "details": {
+        "source_group": "operational_events",
+        "observations_count": 3,
+        "records": [
+          {
+            "id": "EV-007",
+            "source_group": "operational_events",
+            "source": "fetch_operational_events",
+            "component": "message_queue",
+            "signal": "invalidation_queue_consumer_heartbeat",
+            "dimension": "availability",
+            "status": "failed",
+            "value": 0.0,
+            "unit": "heartbeat",
+            "observed_at": "2026-08-13T09:42:00Z",
+            "window_start": "2026-08-13T09:22:00Z",
+            "window_end": "2026-08-13T09:42:00Z",
+            "scope": "worker_lifecycle",
+            "reliability": "verified",
+            "details": "Cache-invalidation event consumer worker pool crashed / heartbeat lost 18 minutes ago. Process exited with OOM killer code 137."
+          },
+          {
+            "id": "EV-008",
+            "source_group": "operational_events",
+            "source": "fetch_operational_events",
+            "component": "message_queue",
+            "signal": "invalidation_queue_backlog",
+            "dimension": "backlog",
+            "status": "failed",
+            "value": 42850.0,
+            "unit": "messages",
+            "observed_at": "2026-08-13T09:59:00Z",
+            "window_start": "2026-08-13T09:54:00Z",
+            "window_end": "2026-08-13T09:59:00Z",
+            "scope": "queue_depth",
+            "reliability": "verified",
+            "details": "Unconsumed cache invalidation event backlog accumulated to 42,850 messages, continuing to grow at 120 msgs/sec."
+          },
+          {
+            "id": "EV-009",
+            "source_group": "operational_events",
+            "source": "fetch_operational_events",
+            "component": "cache",
+            "signal": "cache_stale_mutation_divergence",
+            "dimension": "freshness",
+            "status": "degraded",
+            "value": 28400.0,
+            "unit": "stale_keys",
+            "observed_at": "2026-08-13T09:58:00Z",
+            "window_start": "2026-08-13T09:53:00Z",
+            "window_end": "2026-08-13T09:58:00Z",
+            "scope": "data_consistency",
+            "reliability": "aggregated",
+            "details": "Divergence scan detected ~28,400 cache keys containing outdated entity state relative to primary database tables."
+          }
+        ],
+        "summary": "Retrieved 3 operational event records."
+      }
+    },
+    {
+      "round_index": 3,
+      "action_type": "model_reasoning",
+      "timestamp": "2026-08-13T19:12:19.793590Z",
+      "tool_name": null,
+      "summary": "Agent evaluated diagnostic state: requested 0 tool(s).",
+      "details": {
+        "investigation_complete": true,
+        "tool_calls": []
+      }
+    },
+    {
+      "round_index": 3,
+      "action_type": "collection_complete",
+      "timestamp": "2026-08-13T19:12:19.793595Z",
+      "tool_name": null,
+      "summary": "Agent concluded multi-source evidence collection is sufficient.",
+      "details": {}
+    },
+    {
+      "round_index": 4,
+      "action_type": "state_change",
+      "timestamp": "2026-08-13T19:12:19.793672Z",
+      "tool_name": null,
+      "summary": "Classified 4 diagnostic conflict(s) / scope tension(s).",
+      "details": {
+        "conflicts": [
+          {
+            "id": "CONF-001",
+            "conflict_type": "SCOPE_TENSION",
+            "component": "api_gateway",
+            "evidence_ids": [
+              "EV-001",
+              "EV-006"
+            ],
+            "headline": "Scope Tension on api_gateway: Workload vs Synthetic Probe",
+            "description": "Source 'query_telemetry' (workload) reports degraded (gateway_p99_latency=2400.0ms), while source 'run_health_probes' (synthetic_probe) reports healthy (gateway_health_endpoint=200.0http_status).",
+            "operational_implication": "Both observations are accurate within their measurement scopes: the component responds normally to direct synthetic probes, but experiences degradation under actual production workload due to upstream or downstream dependencies."
+          },
+          {
+            "id": "CONF-002",
+            "conflict_type": "SCOPE_TENSION",
+            "component": "database",
+            "evidence_ids": [
+              "EV-002",
+              "EV-004"
+            ],
+            "headline": "Scope Tension on database: Workload vs Synthetic Probe",
+            "description": "Source 'query_telemetry' (workload) reports degraded (db_workload_connection_saturation=92.0percent), while source 'run_health_probes' (synthetic_probe) reports healthy (db_synthetic_direct_probe=1.8ms).",
+            "operational_implication": "Both observations are accurate within their measurement scopes: the component responds normally to direct synthetic probes, but experiences degradation under actual production workload due to upstream or downstream dependencies."
+          },
+          {
+            "id": "CONF-003",
+            "conflict_type": "SCOPE_TENSION",
+            "component": "cache",
+            "evidence_ids": [
+              "EV-003",
+              "EV-005"
+            ],
+            "headline": "Scope Tension on cache: Workload vs Synthetic Probe",
+            "description": "Source 'query_telemetry' (workload) reports degraded (cache_hit_ratio=34.2percent), while source 'run_health_probes' (synthetic_probe) reports healthy (cache_cluster_ping=0.5ms).",
+            "operational_implication": "Both observations are accurate within their measurement scopes: the component responds normally to direct synthetic probes, but experiences degradation under actual production workload due to upstream or downstream dependencies."
+          },
+          {
+            "id": "CONF-004",
+            "conflict_type": "SCOPE_TENSION",
+            "component": "cache",
+            "evidence_ids": [
+              "EV-005",
+              "EV-009"
+            ],
+            "headline": "Scope Tension on cache: Workload vs Synthetic Probe",
+            "description": "Source 'run_health_probes' (synthetic_probe) reports healthy (cache_cluster_ping=0.5ms), while source 'fetch_operational_events' (data_consistency) reports degraded (cache_stale_mutation_divergence=28400.0stale_keys).",
+            "operational_implication": "Both observations are accurate within their measurement scopes: the component responds normally to direct synthetic probes, but experiences degradation under actual production workload due to upstream or downstream dependencies."
+          }
+        ]
+      }
+    },
+    {
+      "round_index": 5,
+      "action_type": "state_change",
+      "timestamp": "2026-08-13T19:12:19.793741Z",
+      "tool_name": null,
+      "summary": "Agent synthesized 4 root-cause candidate(s).",
+      "details": {
+        "hypotheses": [
+          {
+            "cause_code": "CACHE_INVALIDATION_CONSUMER_STALLED",
+            "summary": "Cache invalidation queue consumer stalled, creating a massive event backlog, stale cache reads, and cascading DB query saturation.",
+            "causal_chain": [
+              "Invalidation queue consumer worker crashed (OOM killer exit code 137)",
+              "Cache invalidation messages accumulated to >42,000 unconsumed items",
+              "Cache entries remained stale, causing application cache-miss cascade",
+              "Database connection pool became saturated (92%) handling direct cache misses"
+            ],
+            "supporting_evidence_ids": [
+              "EV-007",
+              "EV-008",
+              "EV-003",
+              "EV-005",
+              "EV-009",
+              "EV-002"
+            ],
+            "opposing_evidence_ids": [],
+            "unresolved_uncertainties": [
+              "Exact root cause of the initial consumer worker OOM crash remains uninspected.",
+              "Time required to drain the 42,000 message backlog under current traffic."
+            ]
+          },
+          {
+            "cause_code": "DATABASE_CAPACITY_DEGRADATION",
+            "summary": "Database cluster capacity is degraded or failing under standard production query load.",
+            "causal_chain": [
+              "Database engine exhausted resources",
+              "Connection pool saturated to 92%",
+              "API Gateway response times spiked to 2400ms"
+            ],
+            "supporting_evidence_ids": [
+              "EV-002"
+            ],
+            "opposing_evidence_ids": [
+              "EV-004"
+            ],
+            "unresolved_uncertainties": [
+              "Direct synthetic probe responds in 1.8ms with healthy CPU, indicating DB engine is not fundamentally degraded."
+            ]
+          },
+          {
+            "cause_code": "TRAFFIC_SURGE",
+            "summary": "Unprecedented external traffic surge is overwhelming the ingress gateway.",
+            "causal_chain": [
+              "High traffic volume overwhelms API Gateway",
+              "Backend services experience elevated latencies"
+            ],
+            "supporting_evidence_ids": [
+              "EV-001",
+              "EV-006"
+            ],
+            "opposing_evidence_ids": [],
+            "unresolved_uncertainties": [
+              "Gateway health endpoint is 200 OK and cache cluster ping is normal."
+            ]
+          },
+          {
+            "cause_code": "CACHE_NODE_FAILURE",
+            "summary": "Cache cluster nodes are down or failing health checks.",
+            "causal_chain": [
+              "Cache node hardware crash",
+              "All cache queries miss"
+            ],
+            "supporting_evidence_ids": [],
+            "opposing_evidence_ids": [
+              "EV-005"
+            ],
+            "unresolved_uncertainties": [
+              "Direct TCP ping confirms cache cluster nodes are fully responsive (0.5ms)."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "round_index": 6,
+      "action_type": "state_change",
+      "timestamp": "2026-08-13T19:12:19.794709Z",
+      "tool_name": null,
+      "summary": "Evaluated evidence strength: Top candidate 'Cache Invalidation Consumer Stalled' (Net Score: 14.0, Decision Weight: 73.7%).",
+      "details": {}
+    },
+    {
+      "round_index": 7,
+      "action_type": "state_change",
+      "timestamp": "2026-08-13T19:12:19.794887Z",
+      "tool_name": null,
+      "summary": "Ranked 4 repair strategies: Rank #1 is 'Restart Invalidation Consumer & Drain Backlog'.",
+      "details": {}
+    }
+  ],
+  "evidence": [
+    {
+      "id": "EV-001",
+      "source_group": "telemetry",
+      "source": "query_telemetry",
+      "component": "api_gateway",
+      "signal": "gateway_p99_latency",
+      "dimension": "latency",
+      "status": "degraded",
+      "value": 2400.0,
+      "unit": "ms",
+      "observed_at": "2026-08-13T09:59:00Z",
+      "window_start": "2026-08-13T09:54:00Z",
+      "window_end": "2026-08-13T09:59:00Z",
+      "scope": "workload",
+      "reliability": "aggregated",
+      "details": "Ingress API Gateway 99th percentile response time elevated from 45ms baseline to 2400ms."
+    },
+    {
+      "id": "EV-002",
+      "source_group": "telemetry",
+      "source": "query_telemetry",
+      "component": "database",
+      "signal": "db_workload_connection_saturation",
+      "dimension": "latency",
+      "status": "degraded",
+      "value": 92.0,
+      "unit": "percent",
+      "observed_at": "2026-08-13T09:59:00Z",
+      "window_start": "2026-08-13T09:54:00Z",
+      "window_end": "2026-08-13T09:59:00Z",
+      "scope": "workload",
+      "reliability": "aggregated",
+      "details": "Active application database connection pool at 92% capacity; average query latency under production workload rose to 185ms."
+    },
+    {
+      "id": "EV-003",
+      "source_group": "telemetry",
+      "source": "query_telemetry",
+      "component": "cache",
+      "signal": "cache_hit_ratio",
+      "dimension": "availability",
+      "status": "degraded",
+      "value": 34.2,
+      "unit": "percent",
+      "observed_at": "2026-08-13T09:59:00Z",
+      "window_start": "2026-08-13T09:54:00Z",
+      "window_end": "2026-08-13T09:59:00Z",
+      "scope": "workload",
+      "reliability": "aggregated",
+      "details": "Cache hit ratio collapsed from normal 92% to 34.2%, causing massive cache-miss traffic storm directly to database."
+    },
+    {
+      "id": "EV-004",
+      "source_group": "health_probe",
+      "source": "run_health_probes",
+      "component": "database",
+      "signal": "db_synthetic_direct_probe",
+      "dimension": "latency",
+      "status": "healthy",
+      "value": 1.8,
+      "unit": "ms",
+      "observed_at": "2026-08-13T09:59:00Z",
+      "window_start": "2026-08-13T09:58:00Z",
+      "window_end": "2026-08-13T09:59:00Z",
+      "scope": "synthetic_probe",
+      "reliability": "verified",
+      "details": "Direct synthetic query probe (indexed lookup & SELECT 1) executing in 1.8ms; DB CPU at 18%, I/O healthy, no lock contention."
+    },
+    {
+      "id": "EV-005",
+      "source_group": "health_probe",
+      "source": "run_health_probes",
+      "component": "cache",
+      "signal": "cache_cluster_ping",
+      "dimension": "availability",
+      "status": "healthy",
+      "value": 0.5,
+      "unit": "ms",
+      "observed_at": "2026-08-13T09:59:00Z",
+      "window_start": "2026-08-13T09:58:00Z",
+      "window_end": "2026-08-13T09:59:00Z",
+      "scope": "synthetic_probe",
+      "reliability": "verified",
+      "details": "Cache cluster nodes responding to TCP health pings in 0.5ms; cluster memory and process status fully operational."
+    },
+    {
+      "id": "EV-006",
+      "source_group": "health_probe",
+      "source": "run_health_probes",
+      "component": "api_gateway",
+      "signal": "gateway_health_endpoint",
+      "dimension": "availability",
+      "status": "healthy",
+      "value": 200.0,
+      "unit": "http_status",
+      "observed_at": "2026-08-13T09:59:00Z",
+      "window_start": "2026-08-13T09:58:00Z",
+      "window_end": "2026-08-13T09:59:00Z",
+      "scope": "synthetic_probe",
+      "reliability": "verified",
+      "details": "Gateway internal /healthz endpoint responding with HTTP 200 in 2.1ms."
+    },
+    {
+      "id": "EV-007",
+      "source_group": "operational_events",
+      "source": "fetch_operational_events",
+      "component": "message_queue",
+      "signal": "invalidation_queue_consumer_heartbeat",
+      "dimension": "availability",
+      "status": "failed",
+      "value": 0.0,
+      "unit": "heartbeat",
+      "observed_at": "2026-08-13T09:42:00Z",
+      "window_start": "2026-08-13T09:22:00Z",
+      "window_end": "2026-08-13T09:42:00Z",
+      "scope": "worker_lifecycle",
+      "reliability": "verified",
+      "details": "Cache-invalidation event consumer worker pool crashed / heartbeat lost 18 minutes ago. Process exited with OOM killer code 137."
+    },
+    {
+      "id": "EV-008",
+      "source_group": "operational_events",
+      "source": "fetch_operational_events",
+      "component": "message_queue",
+      "signal": "invalidation_queue_backlog",
+      "dimension": "backlog",
+      "status": "failed",
+      "value": 42850.0,
+      "unit": "messages",
+      "observed_at": "2026-08-13T09:59:00Z",
+      "window_start": "2026-08-13T09:54:00Z",
+      "window_end": "2026-08-13T09:59:00Z",
+      "scope": "queue_depth",
+      "reliability": "verified",
+      "details": "Unconsumed cache invalidation event backlog accumulated to 42,850 messages, continuing to grow at 120 msgs/sec."
+    },
+    {
+      "id": "EV-009",
+      "source_group": "operational_events",
+      "source": "fetch_operational_events",
+      "component": "cache",
+      "signal": "cache_stale_mutation_divergence",
+      "dimension": "freshness",
+      "status": "degraded",
+      "value": 28400.0,
+      "unit": "stale_keys",
+      "observed_at": "2026-08-13T09:58:00Z",
+      "window_start": "2026-08-13T09:53:00Z",
+      "window_end": "2026-08-13T09:58:00Z",
+      "scope": "data_consistency",
+      "reliability": "aggregated",
+      "details": "Divergence scan detected ~28,400 cache keys containing outdated entity state relative to primary database tables."
+    }
+  ],
+  "conflicts": [
+    {
+      "id": "CONF-001",
+      "conflict_type": "SCOPE_TENSION",
+      "component": "api_gateway",
+      "evidence_ids": [
+        "EV-001",
+        "EV-006"
+      ],
+      "headline": "Scope Tension on api_gateway: Workload vs Synthetic Probe",
+      "description": "Source 'query_telemetry' (workload) reports degraded (gateway_p99_latency=2400.0ms), while source 'run_health_probes' (synthetic_probe) reports healthy (gateway_health_endpoint=200.0http_status).",
+      "operational_implication": "Both observations are accurate within their measurement scopes: the component responds normally to direct synthetic probes, but experiences degradation under actual production workload due to upstream or downstream dependencies."
+    },
+    {
+      "id": "CONF-002",
+      "conflict_type": "SCOPE_TENSION",
+      "component": "database",
+      "evidence_ids": [
+        "EV-002",
+        "EV-004"
+      ],
+      "headline": "Scope Tension on database: Workload vs Synthetic Probe",
+      "description": "Source 'query_telemetry' (workload) reports degraded (db_workload_connection_saturation=92.0percent), while source 'run_health_probes' (synthetic_probe) reports healthy (db_synthetic_direct_probe=1.8ms).",
+      "operational_implication": "Both observations are accurate within their measurement scopes: the component responds normally to direct synthetic probes, but experiences degradation under actual production workload due to upstream or downstream dependencies."
+    },
+    {
+      "id": "CONF-003",
+      "conflict_type": "SCOPE_TENSION",
+      "component": "cache",
+      "evidence_ids": [
+        "EV-003",
+        "EV-005"
+      ],
+      "headline": "Scope Tension on cache: Workload vs Synthetic Probe",
+      "description": "Source 'query_telemetry' (workload) reports degraded (cache_hit_ratio=34.2percent), while source 'run_health_probes' (synthetic_probe) reports healthy (cache_cluster_ping=0.5ms).",
+      "operational_implication": "Both observations are accurate within their measurement scopes: the component responds normally to direct synthetic probes, but experiences degradation under actual production workload due to upstream or downstream dependencies."
+    },
+    {
+      "id": "CONF-004",
+      "conflict_type": "SCOPE_TENSION",
+      "component": "cache",
+      "evidence_ids": [
+        "EV-005",
+        "EV-009"
+      ],
+      "headline": "Scope Tension on cache: Workload vs Synthetic Probe",
+      "description": "Source 'run_health_probes' (synthetic_probe) reports healthy (cache_cluster_ping=0.5ms), while source 'fetch_operational_events' (data_consistency) reports degraded (cache_stale_mutation_divergence=28400.0stale_keys).",
+      "operational_implication": "Both observations are accurate within their measurement scopes: the component responds normally to direct synthetic probes, but experiences degradation under actual production workload due to upstream or downstream dependencies."
+    }
+  ],
+  "hypotheses": [
+    {
+      "cause_code": "CACHE_INVALIDATION_CONSUMER_STALLED",
+      "name": "Cache Invalidation Consumer Stalled",
+      "summary": "Cache invalidation queue consumer stalled, creating a massive event backlog, stale cache reads, and cascading DB query saturation.",
+      "causal_chain": [
+        "Invalidation queue consumer worker crashed (OOM killer exit code 137)",
+        "Cache invalidation messages accumulated to >42,000 unconsumed items",
+        "Cache entries remained stale, causing application cache-miss cascade",
+        "Database connection pool became saturated (92%) handling direct cache misses"
+      ],
+      "supporting_observations": [
+        {
+          "evidence_id": "EV-002",
+          "source_group": "telemetry",
+          "component": "database",
+          "signal": "db_workload_connection_saturation",
+          "reliability_score": 2,
+          "freshness_score": 2,
+          "directness_score": 2,
+          "total_strength": 6,
+          "relationship": "supports",
+          "is_capped": false
+        },
+        {
+          "evidence_id": "EV-003",
+          "source_group": "telemetry",
+          "component": "cache",
+          "signal": "cache_hit_ratio",
+          "reliability_score": 2,
+          "freshness_score": 2,
+          "directness_score": 2,
+          "total_strength": 6,
+          "relationship": "supports",
+          "is_capped": true
+        },
+        {
+          "evidence_id": "EV-001",
+          "source_group": "telemetry",
+          "component": "api_gateway",
+          "signal": "gateway_p99_latency",
+          "reliability_score": 2,
+          "freshness_score": 2,
+          "directness_score": 1,
+          "total_strength": 5,
+          "relationship": "supports",
+          "is_capped": true
+        },
+        {
+          "evidence_id": "EV-008",
+          "source_group": "operational_events",
+          "component": "message_queue",
+          "signal": "invalidation_queue_backlog",
+          "reliability_score": 3,
+          "freshness_score": 2,
+          "directness_score": 3,
+          "total_strength": 8,
+          "relationship": "supports",
+          "is_capped": false
+        },
+        {
+          "evidence_id": "EV-007",
+          "source_group": "operational_events",
+          "component": "message_queue",
+          "signal": "invalidation_queue_consumer_heartbeat",
+          "reliability_score": 3,
+          "freshness_score": 1,
+          "directness_score": 3,
+          "total_strength": 7,
+          "relationship": "supports",
+          "is_capped": true
+        },
+        {
+          "evidence_id": "EV-009",
+          "source_group": "operational_events",
+          "component": "cache",
+          "signal": "cache_stale_mutation_divergence",
+          "reliability_score": 2,
+          "freshness_score": 2,
+          "directness_score": 3,
+          "total_strength": 7,
+          "relationship": "supports",
+          "is_capped": true
+        }
+      ],
+      "opposing_observations": [],
+      "supporting_score": 14.0,
+      "opposing_score": 0.0,
+      "net_evidence_score": 14.0,
+      "decision_weight": 73.7,
+      "strength_band": "STRONG",
+      "unresolved_uncertainties": [
+        "Exact root cause of the initial consumer worker OOM crash remains uninspected.",
+        "Time required to drain the 42,000 message backlog under current traffic."
+      ]
+    },
+    {
+      "cause_code": "TRAFFIC_SURGE",
+      "name": "External Traffic Surge",
+      "summary": "Unprecedented external traffic surge is overwhelming the ingress gateway.",
+      "causal_chain": [
+        "High traffic volume overwhelms API Gateway",
+        "Backend services experience elevated latencies"
+      ],
+      "supporting_observations": [
+        {
+          "evidence_id": "EV-001",
+          "source_group": "telemetry",
+          "component": "api_gateway",
+          "signal": "gateway_p99_latency",
+          "reliability_score": 2,
+          "freshness_score": 2,
+          "directness_score": 1,
+          "total_strength": 5,
+          "relationship": "supports",
+          "is_capped": false
+        }
+      ],
+      "opposing_observations": [],
+      "supporting_score": 5.0,
+      "opposing_score": 0.0,
+      "net_evidence_score": 5.0,
+      "decision_weight": 26.3,
+      "strength_band": "WEAK",
+      "unresolved_uncertainties": [
+        "Gateway health endpoint is 200 OK and cache cluster ping is normal."
+      ]
+    },
+    {
+      "cause_code": "DATABASE_CAPACITY_DEGRADATION",
+      "name": "Database Capacity Degradation",
+      "summary": "Database cluster capacity is degraded or failing under standard production query load.",
+      "causal_chain": [
+        "Database engine exhausted resources",
+        "Connection pool saturated to 92%",
+        "API Gateway response times spiked to 2400ms"
+      ],
+      "supporting_observations": [
+        {
+          "evidence_id": "EV-002",
+          "source_group": "telemetry",
+          "component": "database",
+          "signal": "db_workload_connection_saturation",
+          "reliability_score": 2,
+          "freshness_score": 2,
+          "directness_score": 2,
+          "total_strength": 6,
+          "relationship": "supports",
+          "is_capped": false
+        }
+      ],
+      "opposing_observations": [
+        {
+          "evidence_id": "EV-004",
+          "source_group": "health_probe",
+          "component": "database",
+          "signal": "db_synthetic_direct_probe",
+          "reliability_score": 3,
+          "freshness_score": 2,
+          "directness_score": 3,
+          "total_strength": 8,
+          "relationship": "opposes",
+          "is_capped": false
+        }
+      ],
+      "supporting_score": 6.0,
+      "opposing_score": 8.0,
+      "net_evidence_score": 0.0,
+      "decision_weight": 0.0,
+      "strength_band": "UNSUPPORTED",
+      "unresolved_uncertainties": [
+        "Direct synthetic probe responds in 1.8ms with healthy CPU, indicating DB engine is not fundamentally degraded."
+      ]
+    },
+    {
+      "cause_code": "CACHE_NODE_FAILURE",
+      "name": "Cache Node Hardware / Process Crash",
+      "summary": "Cache cluster nodes are down or failing health checks.",
+      "causal_chain": [
+        "Cache node hardware crash",
+        "All cache queries miss"
+      ],
+      "supporting_observations": [],
+      "opposing_observations": [
+        {
+          "evidence_id": "EV-005",
+          "source_group": "health_probe",
+          "component": "cache",
+          "signal": "cache_cluster_ping",
+          "reliability_score": 3,
+          "freshness_score": 2,
+          "directness_score": 3,
+          "total_strength": 8,
+          "relationship": "opposes",
+          "is_capped": false
+        }
+      ],
+      "supporting_score": 0.0,
+      "opposing_score": 8.0,
+      "net_evidence_score": 0.0,
+      "decision_weight": 0.0,
+      "strength_band": "UNSUPPORTED",
+      "unresolved_uncertainties": [
+        "Direct TCP ping confirms cache cluster nodes are fully responsive (0.5ms)."
+      ]
+    }
+  ],
+  "strategy_ranking": [
+    {
+      "strategy_id": "RECOVER_CONSUMER_AND_DRAIN",
+      "name": "Restart Invalidation Consumer & Drain Backlog",
+      "description": "Restart the stalled queue worker consumer pool and accelerate draining of accumulated cache invalidation events.",
+      "expected_impact": 73.7,
+      "safety": 75.0,
+      "speed": 50.0,
+      "affordability": 75.0,
+      "final_score": 70.47,
+      "rank": 1,
+      "risk_notes": "Slight transient message broker load while processing backlogged events; completely safe for persistent storage.",
+      "reversibility": "High \u2014 consumer workers can be paused or restarted without data mutation loss."
+    },
+    {
+      "strategy_id": "THROTTLE_TRAFFIC",
+      "name": "Apply API Gateway Rate Limiting & Load Shedding",
+      "description": "Enable selective ingress throttling and rate-limiting to shed load from degraded backend tiers.",
+      "expected_impact": 63.15,
+      "safety": 75.0,
+      "speed": 75.0,
+      "affordability": 75.0,
+      "final_score": 67.89,
+      "rank": 2,
+      "risk_notes": "Temporarily degrades client experience with HTTP 429 responses, but prevents total service outage.",
+      "reversibility": "Immediate via gateway configuration change."
+    },
+    {
+      "strategy_id": "RESTART_CACHE",
+      "name": "Flush & Restart Cache Cluster",
+      "description": "Perform an immediate hard flush and restart of the cache cluster nodes.",
+      "expected_impact": 18.43,
+      "safety": 25.0,
+      "speed": 100.0,
+      "affordability": 100.0,
+      "final_score": 36.05,
+      "rank": 3,
+      "risk_notes": "Causes immediate 100% cache stampede onto the database, risking total database collapse while queue consumer remains broken.",
+      "reversibility": "Irreversible \u2014 completely purges warm cache entries in memory."
+    },
+    {
+      "strategy_id": "FAILOVER_DATABASE",
+      "name": "Trigger Database Replica Failover",
+      "description": "Force promotion of secondary database replica to primary instance.",
+      "expected_impact": 0.0,
+      "safety": 25.0,
+      "speed": 50.0,
+      "affordability": 25.0,
+      "final_score": 13.75,
+      "rank": 4,
+      "risk_notes": "High operational risk, connection drops during DNS switch, potential data loss if replica has lag, and leaves the cache invalidation root cause untouched.",
+      "reversibility": "Low \u2014 requires manual database reprovisioning and resynchronization."
+    }
+  ],
+  "recommendation": {
+    "executive_summary": "Recommended Action: 'Restart Invalidation Consumer & Drain Backlog' (Final Score: 70.47/100). Multi-source diagnostic investigation isolated the root cause to 'Cache Invalidation Consumer Stalled', supported by independent queue event evidence and degraded cache freshness. The apparent database saturation is a downstream symptom.",
+    "winning_strategy_id": "RECOVER_CONSUMER_AND_DRAIN",
+    "trade_off_comparison": {
+      "alternative_strategy_id": "RESTART_CACHE",
+      "alternative_strategy_name": "Flush & Restart Cache Cluster",
+      "alternative_advantage": "Flush & Restart Cache Cluster offers higher execution speed (100.0/100) and lower operational friction (100.0/100).",
+      "rejection_rationale": "Flush & Restart Cache Cluster is rejected as the primary action because it does not resolve the stalled queue consumer, and flushing the cache would trigger a dangerous 100% cache stampede onto the already strained database. Recovering the consumer safely restores end-to-end cache invalidation without risking database collapse."
+    },
+    "grounded_contradiction_analysis": "Workload telemetry indicated high database latency and connection pool saturation (92%), while direct synthetic probes showed the database responding in 1.8ms with healthy CPU. This scope tension is explained by the 42,000-message invalidation queue backlog: stale cache keys forced high miss rates (65.8% misses) directly to the database. The database is functioning normally but overwhelmed by upstream invalidation failure.",
+    "remaining_uncertainties": [
+      "Exact root cause of the initial consumer worker OOM crash remains uninspected.",
+      "Time required to drain the 42,000 message backlog under current traffic."
+    ]
+  },
+  "execution": {
+    "execution_status": "not_executed",
+    "operator_approval_required": true,
+    "suggested_command": "kubectl rollout restart deployment/cache-invalidation-worker -n services && redis-cli info",
+    "safety_preconditions": [
+      "Confirm message queue connection is healthy before worker restart.",
+      "Verify database connection pool utilization stays below 95% during backlog replay.",
+      "Monitor cache miss rate until hit ratio recovers above 90%."
+    ]
+  },
+  "validation_passed": true
+}
