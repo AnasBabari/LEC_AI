@@ -138,7 +138,8 @@ class Conflict(BaseModel):
 class DiagnosticToolCall(BaseModel):
     """A diagnostic tool invocation request from Gemini."""
     tool_name: str = Field(..., description="Tool name: query_telemetry, run_health_probes, fetch_operational_events")
-    arguments: dict[str, Any] = Field(default_factory=dict)
+    component: Optional[str] = Field(default=None, description="Optional target component to focus on")
+    dimension: Optional[str] = Field(default=None, description="Optional target dimension to focus on")
     reasoning: str = Field(..., description="Why this diagnostic tool is requested next")
 
 
@@ -165,8 +166,16 @@ class HypothesisDraft(BaseModel):
 
 
 class HypothesisDraftSet(BaseModel):
-    """Collection of candidate hypotheses synthesized by Gemini."""
-    hypotheses: list[HypothesisDraft] = Field(..., min_length=1)
+    """Collection of candidate hypotheses synthesized by Gemini (strictly 2 to 4 unique causes)."""
+    hypotheses: list[HypothesisDraft] = Field(..., min_length=2, max_length=4)
+
+    @field_validator("hypotheses")
+    @classmethod
+    def validate_unique_causes(cls, v: list[HypothesisDraft]) -> list[HypothesisDraft]:
+        codes = [h.cause_code for h in v]
+        if len(codes) != len(set(codes)):
+            raise ValueError("Draft hypotheses must not contain duplicate cause codes.")
+        return v
 
 
 class TradeOffComparison(BaseModel):
@@ -314,7 +323,7 @@ class PolicyConfig(BaseModel):
 class InvestigationTraceItem(BaseModel):
     """Single chronological step in the investigation timeline."""
     round_index: int
-    action_type: str # "tool_call" | "tool_result" | "state_change" | "model_reasoning" | "fallback"
+    action_type: str # "tool_call" | "tool_result" | "state_change" | "model_reasoning" | "fallback" | "validation"
     timestamp: datetime
     tool_name: Optional[str] = None
     summary: str

@@ -5,7 +5,7 @@ import logging
 import os
 from typing import Any, Optional, Protocol, Type, TypeVar, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from faultline.models import (
     Conflict,
@@ -72,13 +72,15 @@ class FakeGeminiProvider:
 
     def __init__(
         self,
-        primary_model: str = "gemini-3.6-flash",
+        primary_model: str = "gemini-3.7-flash",
         thinking_level: str = "medium",
     ) -> None:
         self.primary_model = primary_model
         self.thinking_level = thinking_level
         self.fallback_occurred = False
         self.fallback_reason: Optional[str] = None
+        self.prompt_tokens: Optional[int] = 420
+        self.completion_tokens: Optional[int] = 280
 
     def choose_diagnostics(
         self,
@@ -96,12 +98,10 @@ class FakeGeminiProvider:
             tool_calls = [
                 DiagnosticToolCall(
                     tool_name="query_telemetry",
-                    arguments={},
                     reasoning="Collect active workload telemetry across API gateway, database, and cache layers.",
                 ),
                 DiagnosticToolCall(
                     tool_name="run_health_probes",
-                    arguments={},
                     reasoning="Execute independent synthetic health probes to isolate infrastructure vs workload strain.",
                 ),
             ]
@@ -112,7 +112,6 @@ class FakeGeminiProvider:
             tool_calls = [
                 DiagnosticToolCall(
                     tool_name="fetch_operational_events",
-                    arguments={},
                     reasoning="Fetch operational events, migrations, queue worker heartbeats, and eviction logs.",
                 )
             ]
@@ -127,7 +126,7 @@ class FakeGeminiProvider:
         evidence_ledger: list[EvidenceObservation],
         allowed_causes: list[RootCauseCode],
     ) -> HypothesisDraftSet:
-        """Synthesize candidate hypotheses citing actual evidence IDs."""
+        """Synthesize candidate hypotheses citing strictly valid evidence IDs (2 to 4 unique causes)."""
         queue_evidence_ids = [
             obs.id for obs in evidence_ledger if obs.component.value == "message_queue"
         ]
@@ -166,7 +165,7 @@ class FakeGeminiProvider:
                         "Sequential full table scans triggered on all order search queries",
                         "Application workload latency rose to 1850ms while synthetic health probe responds in 1.5ms",
                     ],
-                    supporting_evidence_ids=migration_ids + gateway_ids,
+                    supporting_evidence_ids=migration_ids,
                     opposing_evidence_ids=[],
                     unresolved_uncertainties=[
                         "Direct synthetic ping executes primary key lookup in 1.5ms, confirming engine is healthy but queries lacking index are degraded.",
@@ -197,23 +196,6 @@ class FakeGeminiProvider:
 
         hypotheses.append(
             HypothesisDraft(
-                cause_code=RootCauseCode.DATABASE_CAPACITY_DEGRADATION,
-                summary="Database cluster capacity is degraded or failing under standard production query load.",
-                causal_chain=[
-                    "Database engine exhausted resources",
-                    "Connection pool saturated / table scans elevated",
-                    "API Gateway response times spiked",
-                ],
-                supporting_evidence_ids=db_workload_ids,
-                opposing_evidence_ids=db_probe_ids,
-                unresolved_uncertainties=[
-                    "Direct synthetic probe responds in <2ms with healthy CPU, indicating DB engine is not fundamentally degraded.",
-                ],
-            )
-        )
-
-        hypotheses.append(
-            HypothesisDraft(
                 cause_code=RootCauseCode.TRAFFIC_SURGE,
                 summary="Unprecedented external traffic surge is overwhelming the ingress gateway.",
                 causal_chain=[
@@ -230,25 +212,23 @@ class FakeGeminiProvider:
 
         hypotheses.append(
             HypothesisDraft(
-                cause_code=RootCauseCode.CACHE_NODE_FAILURE,
-                summary="Cache cluster nodes are down or failing health checks.",
+                cause_code=RootCauseCode.DATABASE_CAPACITY_DEGRADATION,
+                summary="Database cluster capacity is degraded or failing under standard production query load.",
                 causal_chain=[
-                    "Cache node hardware crash",
-                    "All cache queries miss",
+                    "Database engine exhausted resources",
+                    "Connection pool saturated / table scans elevated",
+                    "API Gateway response times spiked",
                 ],
-                supporting_evidence_ids=[],
-                opposing_evidence_ids=[
-                    obs.id
-                    for obs in evidence_ledger
-                    if obs.component.value == "cache" and obs.status.value == "healthy"
-                ],
+                supporting_evidence_ids=db_workload_ids,
+                opposing_evidence_ids=db_probe_ids,
                 unresolved_uncertainties=[
-                    "Direct TCP ping confirms cache cluster nodes are fully responsive (0.5ms).",
+                    "Direct synthetic probe responds in <2ms with healthy CPU, indicating DB engine is not fundamentally degraded.",
                 ],
             )
         )
 
-        filtered = [h for h in hypotheses if h.cause_code in allowed_causes]
+        # Filter to allowed codes and limit to 4 unique causes
+        filtered = [h for h in hypotheses if h.cause_code in allowed_causes][:4]
         return HypothesisDraftSet(hypotheses=filtered)
 
     def explain_decision(
@@ -321,13 +301,13 @@ class FakeGeminiProvider:
             thinking_level=self.thinking_level,
             fallback_occurred=self.fallback_occurred,
             fallback_reason=self.fallback_reason,
-            prompt_tokens=420,
-            completion_tokens=280,
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
         )
 
 
 class GeminiProvider:
-    """Production provider using Google GenAI SDK with startup model discovery and fallback."""
+    """Production provider using Google GenAI SDK with startup model discovery, robust retry, and fallback."""
 
     def __init__(
         self,
@@ -343,9 +323,14 @@ class GeminiProvider:
 
         self.primary_model: str = self.configured_primary
         self.fallback_model: Optional[str] = self.configured_fallback
-        self.active_model: str = self.primary_model
-        self.fallback_occurred = False
-        self.fallback_reason: Optional[str] = None
+        self.discovered_accessible: bool = False
+
+        # Per-run execution metrics
+        self.last_model_used: str = self.primary_model
+        self.last_fallback_occurred: bool = False
+        self.last_fallback_reason: Optional[str] = None
+        self.last_prompt_tokens: Optional[int] = None
+        self.last_completion_tokens: Optional[int] = None
 
         self._client: Optional[Any] = None
         self._initialize_and_probe_models()
@@ -353,7 +338,7 @@ class GeminiProvider:
     def _initialize_and_probe_models(self) -> None:
         """Initialize Google GenAI client and verify accessible model IDs once at startup."""
         if not self.api_key:
-            logger.info("No GEMINI_API_KEY provided. Provider will operate with configured model IDs.")
+            logger.info("No GEMINI_API_KEY provided. Provider will operate with configured model IDs in offline mode.")
             return
 
         try:
@@ -375,20 +360,24 @@ class GeminiProvider:
             if self.configured_primary in available_model_names:
                 self.primary_model = self.configured_primary
                 self.fallback_model = "gemini-3.6-flash"
+                self.discovered_accessible = True
             elif matched_37:
                 self.primary_model = matched_37
                 self.fallback_model = "gemini-3.6-flash"
+                self.discovered_accessible = True
             elif "gemini-3.6-flash" in available_model_names:
                 self.primary_model = "gemini-3.6-flash"
                 self.fallback_model = None
+                self.discovered_accessible = True
             else:
                 self.primary_model = self.configured_primary
+                self.discovered_accessible = False
 
-            self.active_model = self.primary_model
+            self.last_model_used = self.primary_model
             logger.info(f"Resolved Gemini runtime model: primary={self.primary_model}, fallback={self.fallback_model}")
 
         except ImportError:
-            logger.warning("google-genai package not installed; falling back to stub mode.")
+            logger.warning("google-genai package not installed; falling back to offline stub mode.")
         except Exception as e:
             logger.error(f"Error initializing Gemini client: {e}")
 
@@ -397,39 +386,82 @@ class GeminiProvider:
         prompt: str,
         response_schema: Type[T],
     ) -> T:
-        """Call Gemini API requesting structured output conforming to a Pydantic schema."""
+        """Call Gemini API requesting structured output conforming to a Pydantic schema with retry/fallback."""
         if not self._client:
             raise RuntimeError("Gemini client not initialized (GEMINI_API_KEY is missing or invalid)")
 
         from google.genai import types
 
-        config = types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=response_schema,
-        )
+        config_kwargs: dict[str, Any] = {
+            "response_mime_type": "application/json",
+            "response_schema": response_schema,
+        }
+
+        # Configure thinking config if supported
+        try:
+            if hasattr(types, "ThinkingConfig"):
+                budget = 1024 if self.thinking_level == "medium" else (2048 if self.thinking_level == "high" else 0)
+                config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=budget)
+        except Exception:
+            pass
+
+        config = types.GenerateContentConfig(**config_kwargs)
+
+        target_model = self.primary_model
+        fallback_used = False
+        fallback_msg = None
 
         try:
             response = self._client.models.generate_content(
-                model=self.active_model,
+                model=target_model,
                 contents=prompt,
                 config=config,
             )
-            raw_text = response.text
-            return cast(T, response_schema.model_validate_json(raw_text))
-        except Exception as primary_err:
-            logger.warning(f"Primary model {self.active_model} call failed: {primary_err}")
-            if self.fallback_model and self.active_model != self.fallback_model:
-                logger.info(f"Switching to fallback model {self.fallback_model}")
-                self.active_model = self.fallback_model
-                self.fallback_occurred = True
-                self.fallback_reason = str(primary_err)
-                response = self._client.models.generate_content(
-                    model=self.active_model,
-                    contents=prompt,
-                    config=config,
+        except Exception as primary_network_err:
+            logger.warning(f"Primary model {target_model} call failed with network error: {primary_network_err}")
+            if self.fallback_model and self.fallback_model != target_model:
+                logger.info(f"Retrying with fallback model {self.fallback_model}")
+                target_model = self.fallback_model
+                fallback_used = True
+                fallback_msg = str(primary_network_err)
+                fallback_config = types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=response_schema,
                 )
-                return cast(T, response_schema.model_validate_json(response.text))
-            raise primary_err
+                response = self._client.models.generate_content(
+                    model=target_model,
+                    contents=prompt,
+                    config=fallback_config,
+                )
+            else:
+                raise primary_network_err
+
+        # Capture token usage
+        try:
+            if hasattr(response, "usage_metadata") and response.usage_metadata:
+                self.last_prompt_tokens = getattr(response.usage_metadata, "prompt_token_count", None)
+                self.last_completion_tokens = getattr(response.usage_metadata, "candidates_token_count", None)
+        except Exception:
+            pass
+
+        self.last_model_used = target_model
+        self.last_fallback_occurred = fallback_used
+        self.last_fallback_reason = fallback_msg
+
+        raw_text = response.text or "{}"
+        try:
+            return cast(T, response_schema.model_validate_json(raw_text))
+        except (ValidationError, json.JSONDecodeError) as parse_err:
+            logger.warning(f"Structured output schema validation failed: {parse_err}. Attempting 1 same-model repair.")
+            # Perform one same-model correction prompt
+            repair_prompt = f"{prompt}\n\nCRITICAL: Your previous response failed schema validation with error: {parse_err}.\nPlease output ONLY valid JSON matching the exact schema."
+            repaired_response = self._client.models.generate_content(
+                model=target_model,
+                contents=repair_prompt,
+                config=config,
+            )
+            repaired_text = repaired_response.text or "{}"
+            return cast(T, response_schema.model_validate_json(repaired_text))
 
     def choose_diagnostics(
         self,
@@ -458,14 +490,17 @@ Severity: {incident.severity}
 Reported Details: {incident.details}
 
 Current Round: {round_index} (Remaining tool attempts: {remaining_attempts})
-Available Diagnostic Tools: {', '.join(available_tools)}
+Available Diagnostic Tools:
+- query_telemetry: Queries real-time telemetry metrics (latencies, saturation, hit ratios) across gateway, db, cache.
+- run_health_probes: Runs independent synthetic point-in-time health probes and pings to test infrastructure liveness.
+- fetch_operational_events: Fetches worker heartbeats, queue depths, replication events, and eviction logs.
 
 Evidence Collected So Far in Ledger:
 {evidence_summary}
 
-Task:
-Select the most informative next diagnostic tool(s) to isolate root causes and resolve conflicting signals.
-If you have sufficient multi-source evidence (at least 2-3 independent sources), set investigation_complete=True with empty tool_calls.
+Goal:
+Gather cross-source diagnostic evidence from complementary sources (workload telemetry, synthetic health probes, operational events) to discover and reconcile conflicting signals across components.
+Select 1-3 tool calls for this round. If you already have comprehensive coverage across telemetry, health probes, and operational events, set investigation_complete=True with empty tool_calls.
 """
         return self._call_gemini_structured(prompt, DiagnosticActionBatch)
 
@@ -480,24 +515,27 @@ If you have sufficient multi-source evidence (at least 2-3 independent sources),
             fake = FakeGeminiProvider(self.primary_model, self.thinking_level)
             return fake.synthesise_hypotheses(incident, evidence_ledger, allowed_causes)
 
-        evidence_json = json.dumps([obs.model_dump(mode="json") for obs in evidence_ledger], indent=2)
+        evidence_table = "\n".join([
+            f"- [{obs.id}] ({obs.source_group.value}) {obs.component.value}: {obs.signal}={obs.value}{obs.unit} (status: {obs.status.value}, scope: {obs.scope})"
+            for obs in evidence_ledger
+        ])
         allowed_causes_str = ", ".join([c.value for c in allowed_causes])
 
-        prompt = f"""You are Faultline. Synthesize plausible root-cause hypotheses for this incident.
+        prompt = f"""You are Faultline. Synthesize 2 to 4 plausible root-cause hypotheses for this incident.
 Incident: {incident.headline}
 
-Evidence Ledger Observations (YOU MUST CITE EXACT 'id' VALUES e.g. 'EV-001'):
-{evidence_json}
+Evidence Ledger Observations (YOU MUST CITE ONLY THESE VALID 'id' STRINGS):
+{evidence_table}
 
-Allowed Cause Codes (Choose 2-4 plausible causes strictly from this catalogue):
+Allowed Cause Codes (Choose 2-4 UNIQUE causes strictly from this catalogue):
 {allowed_causes_str}
 
 Instructions:
 1. For each chosen cause code, construct a clear summary and step-by-step causal chain.
-2. Cite all supporting evidence IDs from the ledger (e.g. ["EV-001", "EV-003"]).
-3. Cite all opposing evidence IDs from the ledger (e.g. ["EV-004"]).
+2. Cite all supporting evidence IDs from the ledger above (e.g. ["EV-001", "EV-003"]). Do NOT hallucinate IDs.
+3. Cite all opposing evidence IDs from the ledger above (e.g. ["EV-004"]).
 4. Explicitly list any unresolved uncertainties.
-5. Do NOT generate arbitrary cause codes or hallucinated evidence IDs.
+5. You MUST return between 2 and 4 UNIQUE hypotheses. No duplicate cause codes allowed.
 """
         return self._call_gemini_structured(prompt, HypothesisDraftSet)
 
@@ -524,6 +562,11 @@ Instructions:
                 top_alternative,
             )
 
+        evidence_table = "\n".join([
+            f"- [{obs.id}] ({obs.source_group.value}) {obs.component.value}: {obs.signal}={obs.value}{obs.unit} -> status: {obs.status.value} (scope: {obs.scope})"
+            for obs in evidence_ledger
+        ])
+
         conflicts_str = "\n".join([
             f"- {c.id} ({c.conflict_type.value}) on {c.component.value}: {c.headline} (Evidence: {c.evidence_ids})"
             for c in conflicts
@@ -543,6 +586,9 @@ Instructions:
 
 Incident: {incident.headline}
 
+Grounded Evidence Ledger:
+{evidence_table}
+
 Detected Conflicts:
 {conflicts_str}
 
@@ -557,7 +603,7 @@ Top Alternative: {top_alternative.name} (ID: {top_alternative.strategy_id}, Fina
 
 Requirements:
 1. Executive Summary: Clearly state the winner and why root-cause evidence justifies this action.
-2. Trade-Off Comparison: Contrast the winner against {top_alternative.name}. Acknowledge {top_alternative.name}'s specific advantage (e.g. speed/cost) and explain why it is rejected (e.g. risks cache stampede, fails to address root cause).
+2. Trade-Off Defense: Contrast the winner against {top_alternative.name}. Acknowledge {top_alternative.name}'s specific advantage (e.g. speed/cost) and explain why it is rejected (e.g. risks cache stampede, fails to address root cause).
 3. Grounded Contradiction Analysis: Explain how the conflicting diagnostics (e.g. database workload latency vs healthy direct probe) are reconciled.
 4. Remaining Uncertainties: State any operational unknowns for the operator.
 """
@@ -567,10 +613,10 @@ Requirements:
         return ModelExecutionMetadata(
             configured_primary_model=str(self.configured_primary),
             configured_fallback_model=str(self.configured_fallback) if self.configured_fallback else None,
-            model_used=str(self.active_model),
+            model_used=str(self.last_model_used),
             thinking_level=self.thinking_level,
-            fallback_occurred=self.fallback_occurred,
-            fallback_reason=self.fallback_reason,
-            prompt_tokens=420,
-            completion_tokens=280,
+            fallback_occurred=self.last_fallback_occurred,
+            fallback_reason=self.last_fallback_reason,
+            prompt_tokens=self.last_prompt_tokens,
+            completion_tokens=self.last_completion_tokens,
         )

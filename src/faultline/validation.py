@@ -146,4 +146,12 @@ class ReportValidator:
         if not result.execution.operator_approval_required:
             raise ValidationError("Safety boundary violated: operator_approval_required must be True.")
 
+        winning_strat_def = self.policy.strategies.get(top_strategy.strategy_id, {})
+        expected_cmd = winning_strat_def.get("suggested_command")
+        if expected_cmd and result.execution.suggested_command != expected_cmd:
+            raise ValidationError(
+                f"Execution suggested_command mismatch: expected command for '{top_strategy.strategy_id}', "
+                f"got '{result.execution.suggested_command}'."
+            )
+
         return True

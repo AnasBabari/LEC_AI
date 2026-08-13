@@ -70,6 +70,10 @@ class EvidenceLedger:
         """Return snapshot of all recorded observations."""
         return list(self._observations)
 
+    def get_observation_ids(self) -> set[str]:
+        """Return set of all valid observation IDs recorded in this ledger."""
+        return {obs.id for obs in self._observations}
+
     def get_by_id(self, evidence_id: str) -> Optional[EvidenceObservation]:
         """Look up observation by EV-xxx ID."""
         for obs in self._observations:
@@ -99,7 +103,7 @@ class ScenarioRepository:
             self.data_dir = Path(__file__).resolve().parents[2] / "data"
         else:
             self.data_dir = data_dir
-        self.scenarios_dir = self.data_dir / "scenarios"
+        self.scenarios_dir = (self.data_dir / "scenarios").resolve()
 
     def list_scenarios(self) -> list[dict[str, Any]]:
         """List all available scenario metadata."""
@@ -118,8 +122,15 @@ class ScenarioRepository:
         return results
 
     def get_scenario(self, scenario_id: str) -> dict[str, Any]:
-        """Load a specific scenario fixture by ID."""
-        file_path = self.scenarios_dir / f"{scenario_id}.json"
+        """Load a specific scenario fixture by ID with path-traversal protection."""
+        import re
+        if not re.match(r"^[a-zA-Z0-9_-]+$", scenario_id):
+            raise ValueError(f"Invalid scenario ID format: '{scenario_id}'")
+
+        file_path = (self.scenarios_dir / f"{scenario_id}.json").resolve()
+        if not str(file_path).startswith(str(self.scenarios_dir)):
+            raise ValueError(f"Scenario path traversal detected: '{scenario_id}'")
+
         if not file_path.exists():
             raise FileNotFoundError(f"Scenario '{scenario_id}' not found at {file_path}")
         with open(file_path, "r", encoding="utf-8") as f:
@@ -151,6 +162,7 @@ class DiagnosticService:
         self,
         component: Optional[str] = None,
         dimension: Optional[str] = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         """Query time-series telemetry metrics across system components."""
         raw_items = self.scenario_data.get("diagnostics", {}).get("telemetry", [])
@@ -190,6 +202,7 @@ class DiagnosticService:
     def run_health_probes(
         self,
         component: Optional[str] = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         """Run synthetic point-in-time health probes and pings."""
         raw_items = self.scenario_data.get("diagnostics", {}).get("health_probe", [])
@@ -227,6 +240,7 @@ class DiagnosticService:
     def fetch_operational_events(
         self,
         component: Optional[str] = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         """Fetch worker lifecycle heartbeats, queue depths, and operational logs."""
         raw_items = self.scenario_data.get("diagnostics", {}).get("operational_events", [])
