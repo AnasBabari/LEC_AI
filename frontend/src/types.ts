@@ -1,6 +1,6 @@
 export type SourceGroup = 'telemetry' | 'health_probe' | 'operational_events';
 export type ComponentEnum = 'api_gateway' | 'database' | 'cache' | 'message_queue';
-export type HealthDimension = 'latency' | 'availability' | 'freshness' | 'throughput' | 'backlog';
+export type HealthDimension = 'latency' | 'availability' | 'freshness' | 'throughput' | 'backlog' | 'query_efficiency';
 export type HealthStatus = 'healthy' | 'degraded' | 'failed' | 'informational' | 'unknown';
 export type ReliabilityLevel = 'verified' | 'aggregated' | 'advisory';
 export type ConflictType = 'DIRECT_CONTRADICTION' | 'SCOPE_TENSION' | 'TEMPORAL_CONFLICT';
@@ -50,7 +50,8 @@ export interface ObservationEvidenceScore {
   directness_score: number;
   total_strength: number;
   relationship: string;
-  is_capped: boolean;
+  is_dominant?: boolean;
+  excluded_by_source_cap?: boolean;
 }
 
 export interface EvaluatedHypothesis {
@@ -80,6 +81,8 @@ export interface StrategyScore {
   rank: number;
   risk_notes: string;
   reversibility: string;
+  suggested_command?: string;
+  preconditions?: string[];
 }
 
 export interface TradeOffComparison {
@@ -160,5 +163,8 @@ export interface HealthResponse {
   service: string;
   version: string;
   gemini_configured: boolean;
+  provider_mode?: string;
   runtime_model: string;
+  fallback_model?: string;
+  discovered_accessible?: boolean;
 }

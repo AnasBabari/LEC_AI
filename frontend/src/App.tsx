@@ -53,9 +53,16 @@ export const App: React.FC = () => {
       .catch((err) => console.warn('Failed loading scenarios:', err));
   }, []);
 
+  const handleScenarioChange = (newId: string) => {
+    setSelectedScenarioId(newId);
+    setResult(null); // Clear stale results on scenario switch (M9)
+    setError(null);
+  };
+
   const handleRunInvestigation = async () => {
     setLoading(true);
     setError(null);
+    setResult(null); // Clear previous result during run
     try {
       const data = await analyzeScenario(selectedScenarioId);
       setResult(data);
@@ -134,7 +141,12 @@ export const App: React.FC = () => {
         <div className="header-meta">
           {health && (
             <div className="badge badge-primary">
-              <Cpu size={12} /> {health.runtime_model} ({health.gemini_configured ? 'Live API' : 'Deterministic Mode'})
+              <Cpu size={12} /> {health.runtime_model} ({health.provider_mode === 'live_gemini' ? 'Live API' : 'Deterministic Mode'})
+            </div>
+          )}
+          {result?.model_execution?.fallback_occurred && (
+            <div className="badge badge-degraded">
+              Fallback Active ({result.model_execution.model_used})
             </div>
           )}
           <div className="badge badge-healthy">
@@ -148,7 +160,7 @@ export const App: React.FC = () => {
         <select
           className="scenario-select"
           value={selectedScenarioId}
-          onChange={(e) => setSelectedScenarioId(e.target.value)}
+          onChange={(e) => handleScenarioChange(e.target.value)}
           disabled={loading}
         >
           {scenarios.map((s) => (
@@ -198,7 +210,7 @@ export const App: React.FC = () => {
           <AlertTriangle className="alert-icon" size={24} />
           <div>
             <div className="alert-headline">
-              {result ? result.incident.headline : 'Active Fault: High API Gateway p99 Latency & DB Saturation'}
+              {result ? result.incident.headline : (selectedScenario?.title || 'Active Operational Fault')}
             </div>
             <div className="alert-details">
               {result ? result.incident.details : selectedScenario?.description || 'Awaiting investigation trigger.'}
@@ -216,7 +228,10 @@ export const App: React.FC = () => {
               <div className="card-title">
                 <Layers size={16} /> Investigation Timeline ({replayIndex} of {result.investigation_trace.length} steps)
               </div>
-              <div className="badge badge-neutral">Run ID: {result.run_id}</div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <div className="badge badge-neutral">Run ID: {result.run_id}</div>
+                <div className="badge badge-neutral">Model: {result.model_execution.model_used}</div>
+              </div>
             </div>
             <div className="timeline-list">
               {result.investigation_trace.slice(0, replayIndex).map((item: InvestigationTraceItem, idx: number) => (
@@ -271,10 +286,11 @@ export const App: React.FC = () => {
                   <thead>
                     <tr>
                       <th>ID</th>
+                      <th>Source</th>
                       <th>Component</th>
                       <th>Signal</th>
                       <th>Status</th>
-                      <th>Observed Value</th>
+                      <th>Value</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -282,6 +298,9 @@ export const App: React.FC = () => {
                       <tr key={obs.id}>
                         <td>
                           <span className="badge badge-neutral">{obs.id}</span>
+                        </td>
+                        <td style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                          {obs.source_group}
                         </td>
                         <td>
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
@@ -314,6 +333,9 @@ export const App: React.FC = () => {
                 <div key={c.id} className="conflict-item">
                   <div className="conflict-headline">
                     <span className="badge badge-degraded">{c.conflict_type}</span> {c.headline}
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--primary)', margin: '4px 0', fontFamily: 'var(--font-mono)' }}>
+                    Evidence: {c.evidence_ids.join(', ')}
                   </div>
                   <div className="conflict-desc">{c.description}</div>
                   <div className="conflict-implication">
@@ -477,8 +499,13 @@ export const App: React.FC = () => {
         <div className="safety-tag">
           <ShieldAlert size={16} /> NO REPAIR EXECUTED — OPERATOR APPROVAL REQUIRED
         </div>
-        <div style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-          Target: {result?.execution.suggested_command || 'None'}
+        <div style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
+          <div><strong>Suggested Action:</strong> {result?.execution.suggested_command || 'None'}</div>
+          {result?.execution.safety_preconditions && result.execution.safety_preconditions.length > 0 && (
+            <div style={{ marginTop: '4px', fontSize: '11px' }}>
+              <strong>Preconditions:</strong> {result.execution.safety_preconditions.join('; ')}
+            </div>
+          )}
         </div>
       </footer>
     </div>
