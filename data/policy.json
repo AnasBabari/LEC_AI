@@ -71,13 +71,6 @@
           "scope": "workload",
           "relationship": "supports",
           "directness": "indirect"
-        },
-        {
-          "component": "api_gateway",
-          "dimension": "latency",
-          "statuses": ["degraded"],
-          "relationship": "supports",
-          "directness": "contextual"
         }
       ]
     },
@@ -159,16 +152,8 @@
     },
     "DATABASE_INDEX_REGRESSION": {
       "name": "Database Index Regression",
-      "description": "A dropped, invalid, or suboptimal index on critical tables forces full table scans.",
+      "description": "A dropped, invalid, or missing query index on critical tables forces full table scans on production queries.",
       "signal_rules": [
-        {
-          "component": "database",
-          "dimension": "latency",
-          "statuses": ["degraded"],
-          "scope": "workload",
-          "relationship": "supports",
-          "directness": "direct"
-        },
         {
           "component": "database",
           "dimension": "latency",
@@ -178,11 +163,11 @@
           "directness": "direct"
         },
         {
-          "component": "api_gateway",
-          "dimension": "latency",
+          "component": "database",
+          "dimension": "query_efficiency",
           "statuses": ["degraded"],
           "relationship": "supports",
-          "directness": "contextual"
+          "directness": "direct"
         }
       ]
     },
@@ -217,7 +202,12 @@
       "speed": 50,
       "affordability": 75,
       "risk_notes": "Slight transient message broker load while processing backlogged events; completely safe for persistent storage.",
-      "reversibility": "High — consumer workers can be paused or restarted without data mutation loss."
+      "reversibility": "High — consumer workers can be paused or restarted without data mutation loss.",
+      "suggested_command": "kubectl rollout restart deployment/cache-invalidation-worker -n services && redis-cli info",
+      "preconditions": [
+        "Verify message queue broker reachability",
+        "Verify consumer deployment manifest exists in namespace 'services'"
+      ]
     },
     "REBUILD_DATABASE_INDEX": {
       "id": "REBUILD_DATABASE_INDEX",
@@ -235,7 +225,12 @@
       "speed": 50,
       "affordability": 75,
       "risk_notes": "Moderate transient I/O load during index building; completely eliminates table scans upon creation.",
-      "reversibility": "High — index can be dropped without table mutation."
+      "reversibility": "High — index can be dropped without table mutation.",
+      "suggested_command": "psql -c \"CREATE INDEX CONCURRENTLY idx_orders_customer_created ON orders (customer_id, created_at);\"",
+      "preconditions": [
+        "Verify database primary write access",
+        "Confirm available disk space for index creation"
+      ]
     },
     "THROTTLE_TRAFFIC": {
       "id": "THROTTLE_TRAFFIC",
@@ -253,7 +248,11 @@
       "speed": 75,
       "affordability": 75,
       "risk_notes": "Temporarily degrades client experience with HTTP 429 responses, but prevents total service outage.",
-      "reversibility": "Immediate via gateway configuration change."
+      "reversibility": "Immediate via gateway configuration change.",
+      "suggested_command": "kubectl patch ingress/api-gateway -n ingress --type merge -p '{\"spec\":{\"rateLimit\":{\"requestsPerSecond\":500}}}'",
+      "preconditions": [
+        "Verify ingress controller supports dynamic rate-limit patching"
+      ]
     },
     "RESTART_CACHE": {
       "id": "RESTART_CACHE",
@@ -271,7 +270,11 @@
       "speed": 100,
       "affordability": 100,
       "risk_notes": "Causes immediate 100% cache stampede onto the database, risking total database collapse while queue consumer remains broken.",
-      "reversibility": "Irreversible — completely purges warm cache entries in memory."
+      "reversibility": "Irreversible — completely purges warm cache entries in memory.",
+      "suggested_command": "redis-cli flushall && systemctl restart redis-server",
+      "preconditions": [
+        "Confirm database can withstand immediate 100% cache miss load"
+      ]
     },
     "FAILOVER_DATABASE": {
       "id": "FAILOVER_DATABASE",
@@ -289,7 +292,12 @@
       "speed": 50,
       "affordability": 25,
       "risk_notes": "High operational risk, connection drops during DNS switch, potential data loss if replica has lag, and leaves the cache invalidation root cause untouched.",
-      "reversibility": "Low — requires manual database reprovisioning and resynchronization."
+      "reversibility": "Low — requires manual database reprovisioning and resynchronization.",
+      "suggested_command": "patronictl failover main-db-cluster --candidate db-replica-01 --force",
+      "preconditions": [
+        "Verify read replica replication lag is zero",
+        "Confirm primary database is truly unrecoverable"
+      ]
     }
   }
 }

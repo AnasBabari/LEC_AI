@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class SourceGroup(str, Enum):
@@ -29,6 +29,7 @@ class HealthDimension(str, Enum):
     FRESHNESS = "freshness"
     THROUGHPUT = "throughput"
     BACKLOG = "backlog"
+    QUERY_EFFICIENCY = "query_efficiency"
 
 
 class HealthStatus(str, Enum):
@@ -49,8 +50,8 @@ class ReliabilityLevel(str, Enum):
 
 class ConflictType(str, Enum):
     """Classification of diagnostic disagreement."""
-    DIRECT_CONTRADICTION = "DIRECT_CONTRADICTION" # Same component, dimension, window, opposing status
-    SCOPE_TENSION = "SCOPE_TENSION"               # Same component, different scopes (e.g. synthetic vs workload)
+    DIRECT_CONTRADICTION = "DIRECT_CONTRADICTION" # Same component, compatible dimension, window, opposing status
+    SCOPE_TENSION = "SCOPE_TENSION"               # Same component, different scopes (e.g. synthetic probe vs workload)
     TEMPORAL_CONFLICT = "TEMPORAL_CONFLICT"       # Disagreement explained by non-overlapping time windows
 
 
@@ -86,7 +87,7 @@ class EvidenceStrengthBand(str, Enum):
 
 
 # ---------------------------------------------------------------------------
-# Core Domain Entities
+# Core Domain Entities (Immutable Observation Record)
 # ---------------------------------------------------------------------------
 
 class FaultReport(BaseModel):
@@ -100,6 +101,8 @@ class FaultReport(BaseModel):
 
 class EvidenceObservation(BaseModel):
     """An immutable, ledger-assigned diagnostic observation."""
+    model_config = ConfigDict(frozen=True)
+
     id: str = Field(..., description="Stable ID assigned sequentially by the ledger (EV-001, EV-002...)")
     source_group: SourceGroup
     source: str
@@ -207,9 +210,13 @@ class ObservationEvidenceScore(BaseModel):
     directness_score: int
     total_strength: int
     relationship: str # "supports" | "opposes"
-    is_capped: bool = Field(
-        ...,
+    is_dominant: bool = Field(
+        default=True,
         description="True if this observation was selected as the dominant score for its source group"
+    )
+    excluded_by_source_cap: bool = Field(
+        default=False,
+        description="True if this observation was excluded from numeric total because another observation in the same source group had a higher or equal score"
     )
 
 
@@ -245,6 +252,59 @@ class StrategyScore(BaseModel):
     rank: int = Field(..., description="1-indexed deterministic rank position")
     risk_notes: str
     reversibility: str
+    suggested_command: Optional[str] = None
+    preconditions: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Policy Validation Configuration Models
+# ---------------------------------------------------------------------------
+
+class SignalRuleConfig(BaseModel):
+    component: ComponentEnum
+    dimension: HealthDimension
+    statuses: list[HealthStatus]
+    scope: Optional[str] = None
+    relationship: str # "supports" | "opposes"
+    directness: str # "direct" | "indirect" | "contextual"
+
+
+class CauseConfig(BaseModel):
+    name: str
+    description: str
+    signal_rules: list[SignalRuleConfig]
+
+
+class StrategyConfig(BaseModel):
+    id: str
+    name: str
+    description: str
+    effectiveness_by_cause: dict[str, float]
+    safety: float
+    speed: float
+    affordability: float
+    risk_notes: str
+    reversibility: str
+    suggested_command: str
+    preconditions: list[str] = Field(default_factory=list)
+
+
+class PolicyConfig(BaseModel):
+    scoring_weights: dict[str, float]
+    reliability_weights: dict[str, int]
+    freshness_thresholds_seconds: dict[str, int]
+    freshness_weights: dict[str, int]
+    directness_weights: dict[str, int]
+    cause_catalogue: dict[str, CauseConfig]
+    strategies: dict[str, StrategyConfig]
+
+    @field_validator("scoring_weights")
+    @classmethod
+    def validate_weights_sum(cls, v: dict[str, float]) -> dict[str, float]:
+        total = sum(v.values())
+        if abs(total - 1.0) > 1e-4:
+            raise ValueError(f"Scoring weights must sum to 1.0, got {total}")
+        return v
 
 
 # ---------------------------------------------------------------------------

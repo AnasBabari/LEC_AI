@@ -13,9 +13,11 @@ from faultline.models import (
     EvaluatedHypothesis,
     EvidenceObservation,
     EvidenceStrengthBand,
+    HealthDimension,
     HealthStatus,
     HypothesisDraft,
     ObservationEvidenceScore,
+    PolicyConfig,
     RootCauseCode,
     SourceGroup,
     StrategyScore,
@@ -23,13 +25,16 @@ from faultline.models import (
 
 
 class PolicyEngine:
-    """Loads and encapsulates scoring rules, cause catalogues, and strategy matrices."""
+    """Loads, validates, and encapsulates scoring rules, cause catalogues, and strategy matrices."""
 
     def __init__(self, policy_path: Optional[Path] = None) -> None:
         if policy_path is None:
             policy_path = Path(__file__).resolve().parents[2] / "data" / "policy.json"
         with open(policy_path, "r", encoding="utf-8") as f:
             self.policy_data: dict[str, Any] = json.load(f)
+
+        # Validate policy schema at startup
+        self.validated_config = PolicyConfig.model_validate(self.policy_data)
 
         self.scoring_weights = self.policy_data["scoring_weights"]
         self.reliability_weights = self.policy_data["reliability_weights"]
@@ -45,17 +50,24 @@ class ConflictDetector:
 
     @staticmethod
     def detect_conflicts(ledger: EvidenceLedger) -> list[Conflict]:
-        """Classify direct contradictions, scope tensions, and temporal conflicts."""
+        """Classify direct contradictions, scope tensions, and temporal conflicts with strict dimension matching."""
         observations = ledger.get_observations()
         conflicts: list[Conflict] = []
         conflict_idx = 1
 
-        # Group observations by component
-        by_component: dict[ComponentEnum, list[EvidenceObservation]] = {}
-        for obs in observations:
-            by_component.setdefault(obs.component, []).append(obs)
+        # Group observations by (component, dimension_family)
+        # Latency and query efficiency are in the latency/performance family
+        def get_dimension_family(dim: HealthDimension) -> str:
+            if dim in (HealthDimension.LATENCY, HealthDimension.QUERY_EFFICIENCY):
+                return "performance"
+            return dim.value
 
-        for component, obs_list in by_component.items():
+        by_comp_dim: dict[tuple[ComponentEnum, str], list[EvidenceObservation]] = {}
+        for obs in observations:
+            family = get_dimension_family(obs.dimension)
+            by_comp_dim.setdefault((obs.component, family), []).append(obs)
+
+        for (component, _), obs_list in by_comp_dim.items():
             # Compare pairs from DIFFERENT source groups
             for i in range(len(obs_list)):
                 for j in range(i + 1, len(obs_list)):
@@ -80,7 +92,7 @@ class ConflictDetector:
         obs_b: EvidenceObservation,
         conflict_id: str,
     ) -> Optional[Conflict]:
-        """Evaluate if two observations form a reportable conflict."""
+        """Evaluate if two observations on the same component and compatible dimension form a reportable conflict."""
         a_is_healthy = obs_a.status == HealthStatus.HEALTHY
         b_is_healthy = obs_b.status == HealthStatus.HEALTHY
         a_is_unhealthy = obs_a.status in (HealthStatus.DEGRADED, HealthStatus.FAILED)
@@ -90,25 +102,7 @@ class ConflictDetector:
         if not ((a_is_healthy and b_is_unhealthy) or (b_is_healthy and a_is_unhealthy)):
             return None
 
-        # Check if differing scopes explain the apparent disagreement
-        if obs_a.scope != obs_b.scope:
-            return Conflict(
-                id=conflict_id,
-                conflict_type=ConflictType.SCOPE_TENSION,
-                component=obs_a.component,
-                evidence_ids=[obs_a.id, obs_b.id],
-                headline=f"Scope Tension on {obs_a.component.value}: Workload vs Synthetic Probe",
-                description=(
-                    f"Source '{obs_a.source}' ({obs_a.scope}) reports {obs_a.status.value} ({obs_a.signal}={obs_a.value}{obs_a.unit}), "
-                    f"while source '{obs_b.source}' ({obs_b.scope}) reports {obs_b.status.value} ({obs_b.signal}={obs_b.value}{obs_b.unit})."
-                ),
-                operational_implication=(
-                    "Both observations are accurate within their measurement scopes: the component responds normally to direct synthetic probes, "
-                    "but experiences degradation under actual production workload due to upstream or downstream dependencies."
-                ),
-            )
-
-        # Check temporal overlap for same scope
+        # Check temporal overlap
         windows_overlap = (obs_a.window_start <= obs_b.window_end) and (
             obs_b.window_start <= obs_a.window_end
         )
@@ -125,6 +119,24 @@ class ConflictDetector:
                     f"whereas {obs_b.source} ({obs_b.source_group.value}) reported {obs_b.status.value} at {obs_b.observed_at.isoformat()}."
                 ),
                 operational_implication="Discrepancy is explained by non-overlapping measurement windows; state likely evolved over time.",
+            )
+
+        # If overlapping and differing measurement scopes: Scope Tension
+        if obs_a.scope != obs_b.scope:
+            return Conflict(
+                id=conflict_id,
+                conflict_type=ConflictType.SCOPE_TENSION,
+                component=obs_a.component,
+                evidence_ids=[obs_a.id, obs_b.id],
+                headline=f"Scope Tension on {obs_a.component.value}: Workload vs Synthetic Probe",
+                description=(
+                    f"Source '{obs_a.source}' ({obs_a.scope}) reports {obs_a.status.value} ({obs_a.signal}={obs_a.value}{obs_a.unit}), "
+                    f"while source '{obs_b.source}' ({obs_b.scope}) reports {obs_b.status.value} ({obs_b.signal}={obs_b.value}{obs_b.unit})."
+                ),
+                operational_implication=(
+                    "Both observations are accurate within their measurement scopes: the component responds normally to direct synthetic probes, "
+                    "but experiences degradation under actual production workload due to upstream or downstream dependencies."
+                ),
             )
 
         # Direct contradiction: same scope, overlapping window, opposing status
@@ -201,7 +213,8 @@ class EvidenceEvaluator:
                     directness_score=d_score,
                     total_strength=total_strength,
                     relationship=rel_str,
-                    is_capped=False,
+                    is_dominant=True,
+                    excluded_by_source_cap=False,
                 )
 
                 if rel_str == "supports":
@@ -214,8 +227,8 @@ class EvidenceEvaluator:
             opposing_scored = self._apply_source_group_cap(opposing_candidates)
 
             # Calculate net evidence
-            support_total = sum(s.total_strength for s in supporting_scored if not s.is_capped)
-            oppose_total = sum(s.total_strength for s in opposing_scored if not s.is_capped)
+            support_total = sum(s.total_strength for s in supporting_scored if not s.excluded_by_source_cap)
+            oppose_total = sum(s.total_strength for s in opposing_scored if not s.excluded_by_source_cap)
             net_score = max(0.0, float(support_total - oppose_total))
 
             raw_net_scores[code] = net_score
@@ -252,13 +265,14 @@ class EvidenceEvaluator:
             net = temp["net_evidence_score"]
 
             if total_positive_net > 0:
-                decision_weight = round((net / total_positive_net) * 100.0, 1)
+                raw_weight = (net / total_positive_net) * 100.0
+                decision_weight = round(raw_weight, 1)
             else:
                 decision_weight = 0.0
 
             # Determine strength band
             distinct_supporting_groups = {
-                s.source_group for s in temp["supporting_observations"] if not s.is_capped
+                s.source_group for s in temp["supporting_observations"] if not s.excluded_by_source_cap
             }
             if net >= 12 and len(distinct_supporting_groups) >= 2:
                 band = EvidenceStrengthBand.STRONG
@@ -291,8 +305,16 @@ class EvidenceEvaluator:
         return evaluated
 
     def _compute_freshness_score(self, observed_at: datetime, incident_at: datetime) -> int:
-        """Compute freshness score anchored to incident timestamp."""
-        diff_seconds = abs((incident_at - observed_at).total_seconds())
+        """Compute freshness score anchored to incident timestamp with clock skew protection."""
+        if observed_at > incident_at:
+            forward_skew = (observed_at - incident_at).total_seconds()
+            if forward_skew > 60:
+                # Discard or penalize future-dated data
+                return self.policy.freshness_weights["stale"]
+            diff_seconds = 0.0
+        else:
+            diff_seconds = (incident_at - observed_at).total_seconds()
+
         if diff_seconds <= self.policy.freshness_thresholds["current_max"]:
             return self.policy.freshness_weights["current"]
         if diff_seconds <= self.policy.freshness_thresholds["recent_max"]:
@@ -331,12 +353,11 @@ class EvidenceEvaluator:
             by_group.setdefault(item.source_group, []).append(item)
 
         result: list[ObservationEvidenceScore] = []
-        for group, items in by_group.items():
+        for _, items in by_group.items():
             # Sort descending by total_strength
             sorted_items = sorted(items, key=lambda x: x.total_strength, reverse=True)
-            # Dominant item is uncapped
             for idx, item in enumerate(sorted_items):
-                is_capped = idx > 0
+                is_excluded = idx > 0
                 result.append(
                     ObservationEvidenceScore(
                         evidence_id=item.evidence_id,
@@ -348,7 +369,8 @@ class EvidenceEvaluator:
                         directness_score=item.directness_score,
                         total_strength=item.total_strength,
                         relationship=item.relationship,
-                        is_capped=is_capped,
+                        is_dominant=not is_excluded,
+                        excluded_by_source_cap=is_excluded,
                     )
                 )
 
@@ -365,7 +387,7 @@ class StrategyRanker:
         self,
         evaluated_hypotheses: list[EvaluatedHypothesis],
     ) -> list[StrategyScore]:
-        """Rank strategies based on causal expected impact, safety, speed, and affordability."""
+        """Rank strategies based on causal expected impact, safety, speed, and affordability using full precision."""
         weights = self.policy.scoring_weights
         w_impact = weights["impact"]
         w_safety = weights["safety"]
@@ -373,9 +395,14 @@ class StrategyRanker:
         w_affordability = weights["affordability"]
 
         # Map cause decision weights (0.0 - 1.0)
-        cause_weights = {
-            h.cause_code.value: (h.decision_weight / 100.0) for h in evaluated_hypotheses
-        }
+        # Use full precision net evidence ratio if available
+        total_pos_net = sum(h.net_evidence_score for h in evaluated_hypotheses if h.net_evidence_score > 0)
+        cause_weights: dict[str, float] = {}
+        for h in evaluated_hypotheses:
+            if total_pos_net > 0 and h.net_evidence_score > 0:
+                cause_weights[h.cause_code.value] = h.net_evidence_score / total_pos_net
+            else:
+                cause_weights[h.cause_code.value] = 0.0
 
         scores: list[StrategyScore] = []
 
@@ -411,6 +438,8 @@ class StrategyRanker:
                 rank=0, # Populated after sorting
                 risk_notes=strat_def["risk_notes"],
                 reversibility=strat_def["reversibility"],
+                suggested_command=strat_def.get("suggested_command"),
+                preconditions=strat_def.get("preconditions", []),
             )
             scores.append(score_entry)
 

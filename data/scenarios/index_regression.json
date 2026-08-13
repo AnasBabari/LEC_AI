@@ -29,7 +29,7 @@
       {
         "signal": "database_table_scan_rate",
         "component": "database",
-        "dimension": "latency",
+        "dimension": "query_efficiency",
         "status": "degraded",
         "value": 480.0,
         "unit": "scans/sec",
