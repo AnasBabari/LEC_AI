@@ -5,10 +5,8 @@ from typing import Optional
 
 from faultline.models import (
     AnalysisResult,
-    ConflictType,
     LifecycleState,
     RootCauseCode,
-    SourceGroup,
 )
 from faultline.reasoning import PolicyEngine, StrategyRanker
 

@@ -41,7 +41,7 @@ def test_analyze_endpoint_canonical_success() -> None:
         assert len(data["evidence"]) == 9
         assert len(data["conflicts"]) >= 1
         assert len(data["hypotheses"]) >= 3
-        assert len(data["strategy_ranking"]) == 4
+        assert len(data["strategy_ranking"]) >= 4
 
         # Verify strategy ranking winner
         assert data["strategy_ranking"][0]["strategy_id"] == "RECOVER_CONSUMER_AND_DRAIN"

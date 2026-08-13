@@ -1,6 +1,6 @@
 """Tests for GeminiProvider and FakeGeminiProvider."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from faultline.diagnostics import DiagnosticService, EvidenceLedger, ScenarioRepository
 from faultline.gemini import FakeGeminiProvider, GeminiProvider

@@ -103,7 +103,7 @@ class ScenarioRepository:
 
     def list_scenarios(self) -> list[dict[str, Any]]:
         """List all available scenario metadata."""
-        results = []
+        results: list[dict[str, Any]] = []
         if not self.scenarios_dir.exists():
             return results
         for path in sorted(self.scenarios_dir.glob("*.json")):
@@ -123,7 +123,8 @@ class ScenarioRepository:
         if not file_path.exists():
             raise FileNotFoundError(f"Scenario '{scenario_id}' not found at {file_path}")
         with open(file_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data: dict[str, Any] = json.load(f)
+            return data
 
 
 class DiagnosticService:

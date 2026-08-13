@@ -165,8 +165,24 @@
           "component": "database",
           "dimension": "latency",
           "statuses": ["degraded"],
+          "scope": "workload",
           "relationship": "supports",
           "directness": "direct"
+        },
+        {
+          "component": "database",
+          "dimension": "latency",
+          "statuses": ["degraded"],
+          "scope": "migration_history",
+          "relationship": "supports",
+          "directness": "direct"
+        },
+        {
+          "component": "api_gateway",
+          "dimension": "latency",
+          "statuses": ["degraded"],
+          "relationship": "supports",
+          "directness": "contextual"
         }
       ]
     },
@@ -202,6 +218,24 @@
       "affordability": 75,
       "risk_notes": "Slight transient message broker load while processing backlogged events; completely safe for persistent storage.",
       "reversibility": "High — consumer workers can be paused or restarted without data mutation loss."
+    },
+    "REBUILD_DATABASE_INDEX": {
+      "id": "REBUILD_DATABASE_INDEX",
+      "name": "Rebuild Missing Database Index Concurrently",
+      "description": "Execute asynchronous CREATE INDEX CONCURRENTLY to restore missing query index without locking database tables.",
+      "effectiveness_by_cause": {
+        "CACHE_INVALIDATION_CONSUMER_STALLED": 0,
+        "TRAFFIC_SURGE": 0,
+        "DATABASE_CAPACITY_DEGRADATION": 25,
+        "CACHE_NODE_FAILURE": 0,
+        "DATABASE_INDEX_REGRESSION": 100,
+        "REPLICA_LAG": 0
+      },
+      "safety": 75,
+      "speed": 50,
+      "affordability": 75,
+      "risk_notes": "Moderate transient I/O load during index building; completely eliminates table scans upon creation.",
+      "reversibility": "High — index can be dropped without table mutation."
     },
     "THROTTLE_TRAFFIC": {
       "id": "THROTTLE_TRAFFIC",

@@ -3,7 +3,9 @@
 import json
 import logging
 import os
-from typing import Any, Optional, Protocol
+from typing import Any, Optional, Protocol, Type, TypeVar, cast
+
+from pydantic import BaseModel
 
 from faultline.models import (
     Conflict,
@@ -23,9 +25,13 @@ from faultline.models import (
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T", bound=BaseModel)
+
 
 class LLMProviderProtocol(Protocol):
     """Protocol for LLM reasoning providers."""
+
+    primary_model: str
 
     def choose_diagnostics(
         self,
@@ -107,7 +113,7 @@ class FakeGeminiProvider:
                 DiagnosticToolCall(
                     tool_name="fetch_operational_events",
                     arguments={},
-                    reasoning="Fetch message queue worker heartbeats, backlog depth, and eviction logs to explain stale cache.",
+                    reasoning="Fetch operational events, migrations, queue worker heartbeats, and eviction logs.",
                 )
             ]
             return DiagnosticActionBatch(tool_calls=tool_calls, investigation_complete=False)
@@ -122,7 +128,6 @@ class FakeGeminiProvider:
         allowed_causes: list[RootCauseCode],
     ) -> HypothesisDraftSet:
         """Synthesize candidate hypotheses citing actual evidence IDs."""
-        # Find relevant evidence IDs from the ledger
         queue_evidence_ids = [
             obs.id for obs in evidence_ledger if obs.component.value == "message_queue"
         ]
@@ -142,38 +147,72 @@ class FakeGeminiProvider:
         gateway_ids = [
             obs.id for obs in evidence_ledger if obs.component.value == "api_gateway"
         ]
+        migration_ids = [
+            obs.id
+            for obs in evidence_ledger
+            if "migration" in obs.signal or "table_scan" in obs.signal
+        ]
 
-        hypotheses = [
-            HypothesisDraft(
-                cause_code=RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
-                summary="Cache invalidation queue consumer stalled, creating a massive event backlog, stale cache reads, and cascading DB query saturation.",
-                causal_chain=[
-                    "Invalidation queue consumer worker crashed (OOM killer exit code 137)",
-                    "Cache invalidation messages accumulated to >42,000 unconsumed items",
-                    "Cache entries remained stale, causing application cache-miss cascade",
-                    "Database connection pool became saturated (92%) handling direct cache misses",
-                ],
-                supporting_evidence_ids=queue_evidence_ids + cache_evidence_ids + db_workload_ids,
-                opposing_evidence_ids=[],
-                unresolved_uncertainties=[
-                    "Exact root cause of the initial consumer worker OOM crash remains uninspected.",
-                    "Time required to drain the 42,000 message backlog under current traffic.",
-                ],
-            ),
+        hypotheses: list[HypothesisDraft] = []
+
+        # Scenario: Index regression
+        if migration_ids:
+            hypotheses.append(
+                HypothesisDraft(
+                    cause_code=RootCauseCode.DATABASE_INDEX_REGRESSION,
+                    summary="A recent schema migration dropped a critical query index, forcing full sequential table scans (480 scans/sec) on search endpoints.",
+                    causal_chain=[
+                        "Schema migration dropped composite index on 'orders' table",
+                        "Sequential full table scans triggered on all order search queries",
+                        "Application workload latency rose to 1850ms while synthetic health probe responds in 1.5ms",
+                    ],
+                    supporting_evidence_ids=migration_ids + gateway_ids,
+                    opposing_evidence_ids=[],
+                    unresolved_uncertainties=[
+                        "Direct synthetic ping executes primary key lookup in 1.5ms, confirming engine is healthy but queries lacking index are degraded.",
+                    ],
+                )
+            )
+
+        # Canonical Scenario: Cache invalidation consumer stall
+        if queue_evidence_ids or cache_evidence_ids:
+            hypotheses.append(
+                HypothesisDraft(
+                    cause_code=RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
+                    summary="Cache invalidation queue consumer stalled, creating a massive event backlog, stale cache reads, and cascading DB query saturation.",
+                    causal_chain=[
+                        "Invalidation queue consumer worker crashed (OOM killer exit code 137)",
+                        "Cache invalidation messages accumulated to >42,000 unconsumed items",
+                        "Cache entries remained stale, causing application cache-miss cascade",
+                        "Database connection pool became saturated (92%) handling direct cache misses",
+                    ],
+                    supporting_evidence_ids=queue_evidence_ids + cache_evidence_ids + db_workload_ids,
+                    opposing_evidence_ids=[],
+                    unresolved_uncertainties=[
+                        "Exact root cause of the initial consumer worker OOM crash remains uninspected.",
+                        "Time required to drain the 42,000 message backlog under current traffic.",
+                    ],
+                )
+            )
+
+        hypotheses.append(
             HypothesisDraft(
                 cause_code=RootCauseCode.DATABASE_CAPACITY_DEGRADATION,
                 summary="Database cluster capacity is degraded or failing under standard production query load.",
                 causal_chain=[
                     "Database engine exhausted resources",
-                    "Connection pool saturated to 92%",
-                    "API Gateway response times spiked to 2400ms",
+                    "Connection pool saturated / table scans elevated",
+                    "API Gateway response times spiked",
                 ],
                 supporting_evidence_ids=db_workload_ids,
                 opposing_evidence_ids=db_probe_ids,
                 unresolved_uncertainties=[
-                    "Direct synthetic probe responds in 1.8ms with healthy CPU, indicating DB engine is not fundamentally degraded.",
+                    "Direct synthetic probe responds in <2ms with healthy CPU, indicating DB engine is not fundamentally degraded.",
                 ],
-            ),
+            )
+        )
+
+        hypotheses.append(
             HypothesisDraft(
                 cause_code=RootCauseCode.TRAFFIC_SURGE,
                 summary="Unprecedented external traffic surge is overwhelming the ingress gateway.",
@@ -184,9 +223,12 @@ class FakeGeminiProvider:
                 supporting_evidence_ids=gateway_ids,
                 opposing_evidence_ids=[],
                 unresolved_uncertainties=[
-                    "Gateway health endpoint is 200 OK and cache cluster ping is normal.",
+                    "Gateway health endpoint is 200 OK and direct infrastructure probes are healthy.",
                 ],
-            ),
+            )
+        )
+
+        hypotheses.append(
             HypothesisDraft(
                 cause_code=RootCauseCode.CACHE_NODE_FAILURE,
                 summary="Cache cluster nodes are down or failing health checks.",
@@ -203,10 +245,9 @@ class FakeGeminiProvider:
                 unresolved_uncertainties=[
                     "Direct TCP ping confirms cache cluster nodes are fully responsive (0.5ms).",
                 ],
-            ),
-        ]
+            )
+        )
 
-        # Filter to allowed causes
         filtered = [h for h in hypotheses if h.cause_code in allowed_causes]
         return HypothesisDraftSet(hypotheses=filtered)
 
@@ -224,11 +265,37 @@ class FakeGeminiProvider:
         top_hyp = hypotheses[0] if hypotheses else None
         top_hyp_name = top_hyp.name if top_hyp else "Primary Cause"
 
+        # Grounded contradiction analysis
+        has_migration = any("migration" in obs.signal for obs in evidence_ledger)
+        if has_migration:
+            contradiction_text = (
+                "Workload telemetry indicated high database query latency on search endpoints (1850ms) and elevated table scan rates, "
+                "while direct synthetic probes showed the database engine responding in 1.5ms. This scope tension is explained by "
+                "the dropped composite index in migration #4082: the database hardware is healthy, but queries filtering on unindexed columns "
+                "must perform expensive full table scans."
+            )
+            rejection_text = (
+                f"{top_alternative.name} provides temporary symptom relief or faster execution ({top_alternative.speed}/100), "
+                "but does not resolve the missing database index. Rebuilding the index concurrently cures the root cause with zero data loss."
+            )
+        else:
+            contradiction_text = (
+                "Workload telemetry indicated high database latency and connection pool saturation (92%), while direct synthetic "
+                "probes showed the database responding in 1.8ms with healthy CPU. This scope tension is explained by the 42,000-message "
+                "invalidation queue backlog: stale cache keys forced high miss rates (65.8% misses) directly to the database. "
+                "The database is functioning normally but overwhelmed by upstream invalidation failure."
+            )
+            rejection_text = (
+                f"{top_alternative.name} is rejected as the primary action because it does not resolve the stalled queue consumer, "
+                f"and flushing the cache would trigger a dangerous 100% cache stampede onto the already strained database. "
+                f"Recovering the consumer safely restores end-to-end cache invalidation without risking database collapse."
+            )
+
         return DecisionExplanation(
             executive_summary=(
                 f"Recommended Action: '{winning_strategy.name}' (Final Score: {winning_strategy.final_score}/100). "
                 f"Multi-source diagnostic investigation isolated the root cause to '{top_hyp_name}', supported by independent "
-                f"queue event evidence and degraded cache freshness. The apparent database saturation is a downstream symptom."
+                f"diagnostic evidence. The apparent database latency is reconciled by root-cause analysis."
             ),
             winning_strategy_id=winning_strategy.strategy_id,
             trade_off_comparison=TradeOffComparison(
@@ -238,20 +305,11 @@ class FakeGeminiProvider:
                     f"{top_alternative.name} offers higher execution speed ({top_alternative.speed}/100) "
                     f"and lower operational friction ({top_alternative.affordability}/100)."
                 ),
-                rejection_rationale=(
-                    f"{top_alternative.name} is rejected as the primary action because it does not resolve the stalled queue consumer, "
-                    f"and flushing the cache would trigger a dangerous 100% cache stampede onto the already strained database. "
-                    f"Recovering the consumer safely restores end-to-end cache invalidation without risking database collapse."
-                ),
+                rejection_rationale=rejection_text,
             ),
-            grounded_contradiction_analysis=(
-                "Workload telemetry indicated high database latency and connection pool saturation (92%), while direct synthetic "
-                "probes showed the database responding in 1.8ms with healthy CPU. This scope tension is explained by the 42,000-message "
-                "invalidation queue backlog: stale cache keys forced high miss rates (65.8% misses) directly to the database. "
-                "The database is functioning normally but overwhelmed by upstream invalidation failure."
-            ),
+            grounded_contradiction_analysis=contradiction_text,
             remaining_uncertainties=(
-                top_hyp.unresolved_uncertainties if top_hyp else ["Consumer replay duration under live traffic."]
+                top_hyp.unresolved_uncertainties if top_hyp else ["Execution duration under live production workload."]
             ),
         )
 
@@ -280,12 +338,12 @@ class GeminiProvider:
     ) -> None:
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.thinking_level = os.getenv("GEMINI_THINKING_LEVEL", thinking_level)
-        self.configured_primary = preferred_model or os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
-        self.configured_fallback = fallback_model or os.getenv("GEMINI_FALLBACK_MODEL")
+        self.configured_primary: str = preferred_model or os.getenv("GEMINI_MODEL") or "gemini-3.6-flash"
+        self.configured_fallback: Optional[str] = fallback_model or os.getenv("GEMINI_FALLBACK_MODEL")
 
-        self.primary_model = self.configured_primary
-        self.fallback_model = self.configured_fallback
-        self.active_model = self.primary_model
+        self.primary_model: str = self.configured_primary
+        self.fallback_model: Optional[str] = self.configured_fallback
+        self.active_model: str = self.primary_model
         self.fallback_occurred = False
         self.fallback_reason: Optional[str] = None
 
@@ -332,8 +390,8 @@ class GeminiProvider:
     def _call_gemini_structured(
         self,
         prompt: str,
-        response_schema: type,
-    ) -> Any:
+        response_schema: Type[T],
+    ) -> T:
         """Call Gemini API requesting structured output conforming to a Pydantic schema."""
         if not self._client:
             raise RuntimeError("Gemini client not initialized (GEMINI_API_KEY is missing or invalid)")
@@ -352,7 +410,7 @@ class GeminiProvider:
                 config=config,
             )
             raw_text = response.text
-            return response_schema.model_validate_json(raw_text)
+            return cast(T, response_schema.model_validate_json(raw_text))
         except Exception as primary_err:
             logger.warning(f"Primary model {self.active_model} call failed: {primary_err}")
             if self.fallback_model and self.active_model != self.fallback_model:
@@ -365,7 +423,7 @@ class GeminiProvider:
                     contents=prompt,
                     config=config,
                 )
-                return response_schema.model_validate_json(response.text)
+                return cast(T, response_schema.model_validate_json(response.text))
             raise primary_err
 
     def choose_diagnostics(
@@ -502,9 +560,9 @@ Requirements:
 
     def get_execution_metadata(self) -> ModelExecutionMetadata:
         return ModelExecutionMetadata(
-            configured_primary_model=self.configured_primary,
-            configured_fallback_model=self.configured_fallback,
-            model_used=self.active_model,
+            configured_primary_model=str(self.configured_primary),
+            configured_fallback_model=str(self.configured_fallback) if self.configured_fallback else None,
+            model_used=str(self.active_model),
             thinking_level=self.thinking_level,
             fallback_occurred=self.fallback_occurred,
             fallback_reason=self.fallback_reason,

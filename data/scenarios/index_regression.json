@@ -1,0 +1,74 @@
+{
+  "id": "index_regression",
+  "title": "Database Query Degradation due to Missing Index with Normal Synthetic Probe",
+  "incident_at": "2026-08-13T14:00:00Z",
+  "description": "API Gateway reports elevated p99 latency on order search endpoints. Workload queries are suffering severe latency while basic synthetic health probes report the database engine is healthy. Query execution logs show full table scans caused by a dropped index during a recent migration.",
+  "affected_components": ["api_gateway", "database"],
+  "initial_fault_report": {
+    "source": "datadog_apm_alert",
+    "severity": "CRITICAL",
+    "headline": "Elevated P99 Latency (1800ms) on /api/orders/search",
+    "reported_at": "2026-08-13T14:00:00Z",
+    "details": "Order search endpoint latency degraded significantly after schema migration."
+  },
+  "diagnostics": {
+    "telemetry": [
+      {
+        "signal": "order_search_p99_latency",
+        "component": "api_gateway",
+        "dimension": "latency",
+        "status": "degraded",
+        "value": 1850.0,
+        "unit": "ms",
+        "offset_minutes": -1,
+        "window_duration_seconds": 300,
+        "scope": "workload",
+        "reliability": "aggregated",
+        "details": "Gateway p99 latency on /api/orders/search rose from 25ms baseline to 1850ms."
+      },
+      {
+        "signal": "database_table_scan_rate",
+        "component": "database",
+        "dimension": "latency",
+        "status": "degraded",
+        "value": 480.0,
+        "unit": "scans/sec",
+        "offset_minutes": -1,
+        "window_duration_seconds": 300,
+        "scope": "workload",
+        "reliability": "aggregated",
+        "details": "High sequential full table scan rate detected on 'orders' table due to unindexed query filter."
+      }
+    ],
+    "health_probe": [
+      {
+        "signal": "db_synthetic_direct_probe",
+        "component": "database",
+        "dimension": "latency",
+        "status": "healthy",
+        "value": 1.5,
+        "unit": "ms",
+        "offset_minutes": -1,
+        "window_duration_seconds": 60,
+        "scope": "synthetic_probe",
+        "reliability": "verified",
+        "details": "Direct synthetic query probe (SELECT 1 and primary key lookup) responds in 1.5ms; DB CPU and storage I/O healthy."
+      }
+    ],
+    "operational_events": [
+      {
+        "signal": "schema_migration_event",
+        "component": "database",
+        "dimension": "latency",
+        "status": "degraded",
+        "value": 1.0,
+        "unit": "migration",
+        "offset_minutes": -12,
+        "window_duration_seconds": 600,
+        "scope": "migration_history",
+        "reliability": "verified",
+        "details": "Migration #4082 dropped composite index 'idx_orders_customer_created' during column type alteration."
+      }
+    ]
+  }
+}

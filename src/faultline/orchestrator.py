@@ -52,7 +52,6 @@ class IncidentOrchestrator:
     def analyze_scenario(self, scenario_id: str) -> AnalysisResult:
         """Run complete incident investigation for a given scenario ID."""
         run_id = f"RUN-{uuid.uuid4().hex[:8].upper()}"
-        start_time = datetime.now(timezone.utc)
         trace: list[InvestigationTraceItem] = []
 
         def record_trace(

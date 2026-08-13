@@ -14,8 +14,8 @@ from faultline.models import (
     EvidenceObservation,
     EvidenceStrengthBand,
     HealthStatus,
+    HypothesisDraft,
     ObservationEvidenceScore,
-    ReliabilityLevel,
     RootCauseCode,
     SourceGroup,
     StrategyScore,
@@ -153,11 +153,16 @@ class EvidenceEvaluator:
         self,
         candidate_codes: list[RootCauseCode],
         ledger: EvidenceLedger,
-        hypotheses_summaries: Optional[dict[RootCauseCode, dict[str, Any]]] = None,
+        draft_hypotheses: Optional[list[HypothesisDraft]] = None,
     ) -> list[EvaluatedHypothesis]:
         """Evaluate evidence strength for candidate root causes against the evidence ledger."""
         observations = ledger.get_observations()
         evaluated: list[EvaluatedHypothesis] = []
+
+        draft_map: dict[RootCauseCode, HypothesisDraft] = {}
+        if draft_hypotheses:
+            for d in draft_hypotheses:
+                draft_map[d.cause_code] = d
 
         raw_net_scores: dict[RootCauseCode, float] = {}
         temp_evaluations: list[dict[str, Any]] = []
@@ -215,22 +220,28 @@ class EvidenceEvaluator:
 
             raw_net_scores[code] = net_score
 
-            summary_info = (hypotheses_summaries or {}).get(code, {})
+            draft = draft_map.get(code)
+            summary_val = draft.summary if draft else cause_def["description"]
+            causal_chain_val = draft.causal_chain if draft else [
+                f"Trigger root cause: {cause_def['name']}",
+                "Cascades through intermediate service layers",
+                "Surfaces as operational latency and connection exhaustion"
+            ]
+            uncertainties_val = draft.unresolved_uncertainties if draft else [
+                f"Remaining uncertainty regarding exact propagation dynamics of {cause_def['name']}."
+            ]
+
             temp_evaluations.append({
                 "cause_code": code,
                 "name": cause_def["name"],
-                "summary": summary_info.get("summary", cause_def["description"]),
-                "causal_chain": summary_info.get("causal_chain", [
-                    f"Trigger root cause: {cause_def['name']}",
-                    "Cascades through intermediate service layers",
-                    "Surfaces as operational latency and connection exhaustion"
-                ]),
+                "summary": summary_val,
+                "causal_chain": causal_chain_val,
                 "supporting_observations": supporting_scored,
                 "opposing_observations": opposing_scored,
                 "supporting_score": float(support_total),
                 "opposing_score": float(oppose_total),
                 "net_evidence_score": net_score,
-                "unresolved_uncertainties": summary_info.get("unresolved_uncertainties", []),
+                "unresolved_uncertainties": uncertainties_val,
             })
 
         # Calculate decision weights (normalized over positive net scores)

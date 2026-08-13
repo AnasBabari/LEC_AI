@@ -36,7 +36,7 @@ def test_orchestrator_canonical_run() -> None:
     assert top_hyp.strength_band.value == "STRONG"
 
     # 5. Verification of 4D strategy ranking
-    assert len(result.strategy_ranking) == 4
+    assert len(result.strategy_ranking) >= 4
     winner = result.strategy_ranking[0]
     assert winner.strategy_id == "RECOVER_CONSUMER_AND_DRAIN"
     assert winner.rank == 1
@@ -58,3 +58,25 @@ def test_orchestrator_canonical_run() -> None:
 
     # 8. Verification of timeline trace
     assert len(result.investigation_trace) >= 5
+
+
+def test_orchestrator_index_regression_run() -> None:
+    """Execute end-to-end incident investigation on secondary index_regression scenario."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+
+    result = orchestrator.analyze_scenario("index_regression")
+
+    assert result.state == LifecycleState.VALIDATED
+    assert result.validation_passed is True
+    assert len(result.conflicts) >= 1
+
+    # Top hypothesis should be DATABASE_INDEX_REGRESSION
+    assert result.hypotheses[0].cause_code.value == "DATABASE_INDEX_REGRESSION"
+    assert result.hypotheses[0].net_evidence_score >= 14.0
+
+    # Winning strategy should be REBUILD_DATABASE_INDEX
+    assert result.strategy_ranking[0].strategy_id == "REBUILD_DATABASE_INDEX"
+    assert result.strategy_ranking[0].rank == 1
+    assert result.recommendation.winning_strategy_id == "REBUILD_DATABASE_INDEX"
+

@@ -1,8 +1,8 @@
 """Unit tests for ReportValidator assertions and safety invariants."""
 
 import pytest
+
 from faultline.gemini import FakeGeminiProvider
-from faultline.models import RootCauseCode
 from faultline.orchestrator import IncidentOrchestrator
 from faultline.validation import ReportValidator, ValidationError
 

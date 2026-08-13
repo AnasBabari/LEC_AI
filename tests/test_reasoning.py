@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from faultline.diagnostics import DiagnosticService, EvidenceLedger, ScenarioRepository
 from faultline.models import (
+    ComponentEnum,
     ConflictType,
     EvidenceStrengthBand,
     HealthDimension,
@@ -24,7 +25,7 @@ def test_evidence_ledger_isolation_and_sequential_ids() -> None:
     obs1 = ledger1.append_observation(
         source_group=SourceGroup.TELEMETRY,
         source="test",
-        component="api_gateway",
+        component=ComponentEnum.API_GATEWAY,
         signal="p99",
         dimension=HealthDimension.LATENCY,
         status=HealthStatus.DEGRADED,
@@ -40,7 +41,7 @@ def test_evidence_ledger_isolation_and_sequential_ids() -> None:
     obs2 = ledger2.append_observation(
         source_group=SourceGroup.HEALTH_PROBE,
         source="test_probe",
-        component="database",
+        component=ComponentEnum.DATABASE,
         signal="ping",
         dimension=HealthDimension.AVAILABILITY,
         status=HealthStatus.HEALTHY,
@@ -60,7 +61,7 @@ def test_evidence_ledger_isolation_and_sequential_ids() -> None:
     obs1_b = ledger1.append_observation(
         source_group=SourceGroup.OPERATIONAL_EVENTS,
         source="test_event",
-        component="message_queue",
+        component=ComponentEnum.MESSAGE_QUEUE,
         signal="queue_backlog",
         dimension=HealthDimension.BACKLOG,
         status=HealthStatus.FAILED,
@@ -119,7 +120,7 @@ def test_conflict_detection_classifies_scope_tension() -> None:
     conflicts = ConflictDetector.detect_conflicts(ledger)
     assert len(conflicts) >= 1
 
-    db_conflicts = [c for c in conflicts if c.component == "database"]
+    db_conflicts = [c for c in conflicts if c.component == ComponentEnum.DATABASE]
     assert len(db_conflicts) >= 1
     assert db_conflicts[0].conflict_type == ConflictType.SCOPE_TENSION
     assert "Workload vs Synthetic Probe" in db_conflicts[0].headline
@@ -196,7 +197,7 @@ def test_four_dimensional_strategy_ranking() -> None:
     evaluated = evaluator.evaluate_hypotheses(candidates, ledger)
     ranked = ranker.rank_strategies(evaluated)
 
-    assert len(ranked) == 4
+    assert len(ranked) >= 4
     # Winner must be RECOVER_CONSUMER_AND_DRAIN
     assert ranked[0].strategy_id == "RECOVER_CONSUMER_AND_DRAIN"
     assert ranked[0].rank == 1
@@ -212,7 +213,7 @@ def test_four_dimensional_strategy_ranking() -> None:
     assert ranked[2].speed == 100.0
     assert ranked[2].final_score < ranked[0].final_score
 
-    # 4th is FAILOVER_DATABASE (lowest score)
-    assert ranked[3].strategy_id == "FAILOVER_DATABASE"
-    assert ranked[3].rank == 4
-    assert ranked[3].final_score < 20.0
+    # Last is FAILOVER_DATABASE (lowest score)
+    assert ranked[-1].strategy_id == "FAILOVER_DATABASE"
+    assert ranked[-1].rank == len(ranked)
+    assert ranked[-1].final_score < 20.0
