@@ -18,16 +18,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0
 
 # Install uv package manager
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.5.24 /uv /bin/uv
 
-# Copy project definition and install dependencies
-COPY pyproject.toml README.md ./
-RUN uv pip install --system --no-cache -e .
-
-# Copy application source and data
+# Copy project files and source before install
+COPY pyproject.toml README.md uv.lock ./
 COPY src/ /app/src/
 COPY data/ /app/data/
 COPY examples/ /app/examples/
+
+# Install package and dependencies
+RUN uv pip install --system --no-cache -e .
 
 # Copy built frontend assets
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
