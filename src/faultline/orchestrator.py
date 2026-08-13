@@ -8,6 +8,7 @@ from typing import Any, Optional
 from faultline.diagnostics import DiagnosticService, EvidenceLedger, ScenarioRepository
 from faultline.gemini import GeminiProvider, LLMProviderProtocol
 from faultline.models import (
+    AdvantageDimension,
     AnalysisResult,
     ExecutionSafetySection,
     FaultReport,
@@ -15,6 +16,7 @@ from faultline.models import (
     InvestigationTraceItem,
     LifecycleState,
     RootCauseCode,
+    StructuredDecisionGrounding,
 )
 from faultline.reasoning import (
     ConflictDetector,
@@ -232,10 +234,15 @@ class IncidentOrchestrator:
             session=session,
         )
 
-        # Validate draft citations against policy signal rules (C3 & Finding 1)
+        # Validate draft citations against policy signal rules (C3, Finding 1 & Finding 5)
         evaluator = EvidenceEvaluator(self.policy)
         validated_drafts: list[HypothesisDraft] = []
         for draft in hypothesis_draft_set.hypotheses:
+            if not draft.supporting_evidence_ids:
+                logger.warning(
+                    f"Model draft for {draft.cause_code.value} provided no supporting citations; discarding ungrounded draft."
+                )
+                continue
             is_valid, errs = evaluator.validate_hypothesis_citations(draft, ledger.get_observations())
             if not is_valid:
                 raise OrchestratorError(
@@ -300,6 +307,39 @@ class IncidentOrchestrator:
             winning_strategy=winning_strategy,
             top_alternative=fastest_alternative,
             session=session,
+        )
+
+        # Build authoritative structured grounding in the orchestrator
+        alt_dim = AdvantageDimension.NONE
+        alt_val = 0.0
+        win_val = 0.0
+        if fastest_alternative.speed > winning_strategy.speed:
+            alt_dim = AdvantageDimension.SPEED
+            alt_val = fastest_alternative.speed
+            win_val = winning_strategy.speed
+        elif fastest_alternative.affordability > winning_strategy.affordability:
+            alt_dim = AdvantageDimension.AFFORDABILITY
+            alt_val = fastest_alternative.affordability
+            win_val = winning_strategy.affordability
+        elif fastest_alternative.safety > winning_strategy.safety:
+            alt_dim = AdvantageDimension.SAFETY
+            alt_val = fastest_alternative.safety
+            win_val = winning_strategy.safety
+
+        top_hyp = all_evaluated_hypotheses[0] if all_evaluated_hypotheses else None
+
+        explanation.grounding = StructuredDecisionGrounding(
+            winning_strategy_id=winning_strategy.strategy_id,
+            winning_strategy_name=winning_strategy.name,
+            top_cause_code=top_hyp.cause_code if top_hyp else RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
+            reconciled_conflict_ids=[c.id for c in conflicts],
+            reconciled_evidence_ids=[eid for c in conflicts for eid in c.evidence_ids],
+            alternative_strategy_id=fastest_alternative.strategy_id,
+            alternative_strategy_name=fastest_alternative.name,
+            alternative_advantage_dimension=alt_dim,
+            alternative_advantage_value=alt_val,
+            winning_advantage_value=win_val,
+            rejection_risk_factor=fastest_alternative.risk_notes or "Operational risk",
         )
 
         # Build strategy-specific execution guidance deterministically from winning strategy (H2)

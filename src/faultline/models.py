@@ -208,6 +208,15 @@ class TradeOffComparison(BaseModel):
     )
 
 
+class AdvantageDimension(str, Enum):
+    """Supported comparative advantage dimensions for alternative strategies."""
+
+    SPEED = "speed"
+    AFFORDABILITY = "affordability"
+    SAFETY = "safety"
+    NONE = "none"
+
+
 class StructuredDecisionGrounding(BaseModel):
     """Authoritative deterministic ground truth underpinning the narrative explanation."""
 
@@ -218,7 +227,7 @@ class StructuredDecisionGrounding(BaseModel):
     reconciled_evidence_ids: list[str] = Field(default_factory=list)
     alternative_strategy_id: str
     alternative_strategy_name: str
-    alternative_advantage_dimension: str  # "speed" | "affordability" | "safety" | "none"
+    alternative_advantage_dimension: AdvantageDimension
     alternative_advantage_value: float
     winning_advantage_value: float
     rejection_risk_factor: str
@@ -235,9 +244,9 @@ class DecisionExplanation(BaseModel):
         description="How specific conflicting signals (e.g. DB workload latency vs direct probe) are resolved in this decision",
     )
     remaining_uncertainties: list[str] = Field(default_factory=list)
-    grounding: Optional[StructuredDecisionGrounding] = None
-    cited_conflict_ids: list[str] = Field(default_factory=list)
-    cited_evidence_ids: list[str] = Field(default_factory=list)
+    grounding: StructuredDecisionGrounding = Field(
+        ..., description="Mandatory authoritative structured grounding underpinning the decision"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -372,17 +381,29 @@ class InvestigationTraceItem(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class ModelCallTrace(BaseModel):
+    """Details of an individual LLM invocation within an investigation."""
+
+    task: str
+    model: str
+    fallback_used: bool = False
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+
+
 class ModelExecutionMetadata(BaseModel):
     """Provenance and runtime details of the LLM execution."""
 
     configured_primary_model: str
     configured_fallback_model: Optional[str] = None
     model_used: str
+    models_used: list[str] = Field(default_factory=list)
     thinking_level: str
     fallback_occurred: bool = False
     fallback_reason: Optional[str] = None
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
+    call_trace: list[ModelCallTrace] = Field(default_factory=list)
 
 
 class ExecutionSafetySection(BaseModel):

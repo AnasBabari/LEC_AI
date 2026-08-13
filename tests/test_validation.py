@@ -6,6 +6,7 @@ from pydantic import ValidationError as PydanticValidationError
 from faultline.diagnostics import ScenarioRepository
 from faultline.gemini import FakeGeminiProvider
 from faultline.models import (
+    AdvantageDimension,
     EvaluatedHypothesis,
     EvidenceStrengthBand,
     FaultReport,
@@ -353,11 +354,100 @@ def test_validator_rejects_false_advantage_claim_in_grounding() -> None:
 
     assert result.recommendation.grounding is not None
     # Tamper grounding to claim safety advantage when alternative has lower safety than winner
-    result.recommendation.grounding.alternative_advantage_dimension = "safety"
+    result.recommendation.grounding.alternative_advantage_dimension = AdvantageDimension.SAFETY
 
     validator = ReportValidator()
     with pytest.raises(ValidationError, match="claims safety advantage .* but winner has equal or higher"):
         validator.validate(result)
+
+
+def test_validator_rejects_fabricated_hypothesis_scores_and_winner_override() -> None:
+    """Validator rejects report where hypothesis scores and winning strategy were manipulated."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    # Adversarial tampering: inflate database capacity degradation score to 100
+    for hyp in result.hypotheses:
+        if hyp.cause_code == RootCauseCode.DATABASE_CAPACITY_DEGRADATION:
+            hyp.net_evidence_score = 100.0
+
+    validator = ReportValidator()
+    with pytest.raises(ValidationError, match="mismatch: reported 100.0, expected authoritative score"):
+        validator.validate(result)
+
+
+def test_validator_rejects_corrupted_grounding_reconciled_ids() -> None:
+    """Validator rejects report when structured grounding contains fabricated conflict IDs."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    result.recommendation.grounding.reconciled_conflict_ids = ["CONF-FABRICATED-999"]
+    validator = ReportValidator()
+    with pytest.raises(ValidationError, match="reconciled conflicts mismatch"):
+        validator.validate(result)
+
+
+def test_validator_rejects_corrupted_grounding_top_cause() -> None:
+    """Validator rejects report when structured grounding top cause code disagrees with authoritative evaluation."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    result.recommendation.grounding.top_cause_code = RootCauseCode.TRAFFIC_SURGE
+    validator = ReportValidator()
+    with pytest.raises(ValidationError, match="top cause code mismatch"):
+        validator.validate(result)
+
+
+def test_orchestrator_discards_draft_with_empty_citations() -> None:
+    """Orchestrator discards drafts that provide zero supporting citations, preventing ungrounded narratives."""
+
+    class EmptyCitationProvider(FakeGeminiProvider):
+        def synthesise_hypotheses(self, incident, evidence_ledger, allowed_causes, session=None):
+            return HypothesisDraftSet(
+                hypotheses=[
+                    HypothesisDraft(
+                        cause_code=RootCauseCode.DATABASE_CAPACITY_DEGRADATION,
+                        summary="Gremlins degraded the database.",
+                        causal_chain=["Gremlins invaded", "DB slowed down"],
+                        supporting_evidence_ids=[],  # Empty citations
+                        opposing_evidence_ids=[],
+                        unresolved_uncertainties=[],
+                    ),
+                    HypothesisDraft(
+                        cause_code=RootCauseCode.TRAFFIC_SURGE,
+                        summary="Traffic surge from outer space.",
+                        causal_chain=["Aliens clicked refresh"],
+                        supporting_evidence_ids=["EV-001"],  # Valid citation
+                        opposing_evidence_ids=[],
+                        unresolved_uncertainties=[],
+                    ),
+                ]
+            )
+
+    orchestrator = IncidentOrchestrator(provider=EmptyCitationProvider())
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+    # Verify report is still validated and gremlin draft summary was discarded
+    assert result.validation_passed is True
+    assert not any("Gremlins" in h.summary for h in result.hypotheses)
+
+
+def test_error_sanitizer_redacts_private_keys_and_paths() -> None:
+    """Error sanitizer strictly redacts secrets, private paths, and classifies into safe categories."""
+    from faultline.gemini import sanitize_error_category
+
+    err = RuntimeError("503 upstream service unavailable; api_key=SUPER-SECRET-KEY-12345; path=/srv/private/keys.env")
+    sanitized = sanitize_error_category(err)
+    assert "SUPER-SECRET-KEY" not in sanitized
+    assert "/srv/private" not in sanitized
+    assert sanitized == "service_unavailable (RuntimeError)"
+
+    rate_err = Exception("429 rate limit exceeded for key AKIA-SECRET-999")
+    sanitized_rate = sanitize_error_category(rate_err)
+    assert "AKIA-SECRET" not in sanitized_rate
+    assert sanitized_rate == "rate_limit_exceeded (Exception)"
 
 
 def test_scenario_path_traversal_protection() -> None:

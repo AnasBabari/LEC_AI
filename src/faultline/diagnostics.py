@@ -66,6 +66,10 @@ class EvidenceLedger:
         self._observations.append(obs)
         return obs
 
+    def record_raw(self, observation: EvidenceObservation) -> None:
+        """Record an existing EvidenceObservation directly into the ledger."""
+        self._observations.append(observation)
+
     def get_observations(self) -> list[EvidenceObservation]:
         """Return snapshot of all recorded observations."""
         return list(self._observations)
