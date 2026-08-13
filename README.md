@@ -21,7 +21,7 @@ Modern distributed systems rarely fail with single, unambiguous alarms. During m
 The fastest or loudest fix (e.g. flushing the cache or failing over the database) is often disastrous: flushing the cache causes an immediate 100% cache stampede onto the strained database, while database failover risks replication data loss without fixing the stalled invalidation worker.
 
 **Faultline** solves this through a **hybrid agent architecture**:
-- **LLM Reasoning (Gemini 3.6/3.7 Flash)**: Adaptively selects which diagnostic tools to query, hypothesizes candidate root causes from an allowed closed catalogue, and drafts written executive justifications defending trade-offs.
+- **LLM Reasoning (Gemini 3.7 Flash Primary, Gemini 3.6 Flash Fallback)**: Gemini 3.7 Flash is the intended primary model with exact accessible API model IDs verified at startup via `client.models.list()`, and Gemini 3.6 Flash acting as the automatic verified fallback. The LLM adaptively selects which diagnostic tools to query, synthesizes candidate root causes from an allowed closed catalogue, and drafts written executive justifications defending trade-offs.
 - **Deterministic Python Core**: Enforces per-investigation evidence provenance (`EV-001`, `EV-002`, ...), deterministically classifies conflicts (*Direct Contradictions* vs. *Scope Tensions* vs. *Temporal Conflicts*), scores net evidence strength with per-source-group caps, calculates 4-dimensional strategy scores, and strictly validates all invariants before presenting recommendations to human operators.
 
 ```mermaid
@@ -161,8 +161,8 @@ $$\text{Final Score} = 0.60 \times \text{Expected Impact} + 0.20 \times \text{Sa
    Expected Impact dominates (60%) because a fast fix for the wrong cause is useless. Safety comes second (20%) because remediation must not worsen the outage.
 9. **Why synchronous API + client-side timeline replay instead of streaming (SSE)?**  
    Synchronous `POST /api/analyze` is deadline-safe and robust, avoiding SSE reconnect issues and partial parsing bugs while preserving complete timeline playback.
-10. **Why resolve Gemini models once at startup?**  
-    Probing models on every request introduces unnecessary latency and quota consumption. Probing once at startup caches availability cleanly.
+10. **Why verify models at startup with 3.7 primary and 3.6 fallback?**  
+    Gemini 3.7 Flash is the intended primary reasoning model. Because API account model availability can vary during rollout, Faultline queries `client.models.list()` once at startup to discover the exact accessible 3.7 identifier without guessing pricing anchors, seamlessly falling back to `gemini-3.6-flash` if unavailable. Probing once at startup caches availability cleanly without per-request latency.
 11. **Why medium thinking level?**  
     `thinking_level="medium"` provides the optimal balance of reasoning depth and low latency for live operational decision support.
 12. **Why anchor freshness to incident timestamp?**  

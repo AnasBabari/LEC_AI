@@ -338,8 +338,8 @@ class GeminiProvider:
     ) -> None:
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.thinking_level = os.getenv("GEMINI_THINKING_LEVEL", thinking_level)
-        self.configured_primary: str = preferred_model or os.getenv("GEMINI_MODEL") or "gemini-3.6-flash"
-        self.configured_fallback: Optional[str] = fallback_model or os.getenv("GEMINI_FALLBACK_MODEL")
+        self.configured_primary: str = preferred_model or os.getenv("GEMINI_MODEL") or "gemini-3.7-flash"
+        self.configured_fallback: Optional[str] = fallback_model or os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-3.6-flash"
 
         self.primary_model: str = self.configured_primary
         self.fallback_model: Optional[str] = self.configured_fallback
@@ -351,7 +351,7 @@ class GeminiProvider:
         self._initialize_and_probe_models()
 
     def _initialize_and_probe_models(self) -> None:
-        """Initialize Google GenAI client and probe model availability once at startup."""
+        """Initialize Google GenAI client and verify accessible model IDs once at startup."""
         if not self.api_key:
             logger.info("No GEMINI_API_KEY provided. Provider will operate with configured model IDs.")
             return
@@ -370,14 +370,19 @@ class GeminiProvider:
             except Exception as probe_err:
                 logger.warning(f"Could not list Gemini models on startup: {probe_err}")
 
-            # Check if preferred 3.7 model is explicitly available
+            # Verify if 3.7 Flash is accessible under exact or versioned identifier
+            matched_37 = next((m for m in available_model_names if "3.7-flash" in m), None)
             if self.configured_primary in available_model_names:
                 self.primary_model = self.configured_primary
-            elif "gemini-3.7-flash" in available_model_names:
-                self.primary_model = "gemini-3.7-flash"
                 self.fallback_model = "gemini-3.6-flash"
-            else:
+            elif matched_37:
+                self.primary_model = matched_37
+                self.fallback_model = "gemini-3.6-flash"
+            elif "gemini-3.6-flash" in available_model_names:
                 self.primary_model = "gemini-3.6-flash"
+                self.fallback_model = None
+            else:
+                self.primary_model = self.configured_primary
 
             self.active_model = self.primary_model
             logger.info(f"Resolved Gemini runtime model: primary={self.primary_model}, fallback={self.fallback_model}")
