@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -94,3 +96,30 @@ def test_path_traversal_scenario_returns_404() -> None:
         payload = {"scenario_id": "../policy"}
         response = client.post("/api/analyze", json=payload)
         assert response.status_code == 404
+
+
+def test_frontend_path_traversal_is_blocked() -> None:
+    """Test encoded or relative path traversal sequences cannot escape frontend directory."""
+    with TestClient(app) as client:
+        # Attempt to read pyproject.toml via encoded traversal
+        response = client.get("/%2e%2e/%2e%2e/pyproject.toml")
+        # Must return 404 or index.html, never raw pyproject.toml file content
+        assert "[project]" not in response.text
+
+        response_env = client.get("/%2e%2e/%2e%2e/.env")
+        assert "GEMINI_API_KEY" not in response_env.text
+
+
+def test_internal_server_error_sanitization() -> None:
+    """Test that unhandled errors log internally and return generic sanitized message with ID."""
+    with TestClient(app) as client:
+        mock_orch = MagicMock()
+        mock_orch.analyze_scenario.side_effect = RuntimeError("Sensitive internal database path: /var/secrets/key.db")
+        app.state.orchestrator = mock_orch
+
+        response = client.post("/api/analyze", json={"scenario_id": "cache_invalidation_lag"})
+        assert response.status_code == 500
+        detail = response.json().get("detail", "")
+        assert "/var/secrets" not in detail
+        assert "Internal incident analysis failure" in detail
+        assert "Incident reference ID: ERR-" in detail

@@ -72,15 +72,15 @@ class FakeGeminiProvider:
 
     def __init__(
         self,
-        primary_model: str = "gemini-3.7-flash",
-        thinking_level: str = "medium",
+        primary_model: str = "offline-deterministic-fake",
+        thinking_level: str = "none",
     ) -> None:
         self.primary_model = primary_model
         self.thinking_level = thinking_level
         self.fallback_occurred = False
         self.fallback_reason: Optional[str] = None
-        self.prompt_tokens: Optional[int] = 420
-        self.completion_tokens: Optional[int] = 280
+        self.prompt_tokens: Optional[int] = None
+        self.completion_tokens: Optional[int] = None
 
     def choose_diagnostics(
         self,
@@ -297,12 +297,12 @@ class FakeGeminiProvider:
         return ModelExecutionMetadata(
             configured_primary_model=self.primary_model,
             configured_fallback_model=None,
-            model_used=self.primary_model,
-            thinking_level=self.thinking_level,
-            fallback_occurred=self.fallback_occurred,
-            fallback_reason=self.fallback_reason,
-            prompt_tokens=self.prompt_tokens,
-            completion_tokens=self.completion_tokens,
+            model_used="offline-deterministic-fake",
+            thinking_level="none",
+            fallback_occurred=False,
+            fallback_reason=None,
+            prompt_tokens=None,
+            completion_tokens=None,
         )
 
 
@@ -436,17 +436,20 @@ class GeminiProvider:
             else:
                 raise primary_network_err
 
-        # Capture token usage
+        # Capture and accumulate token usage
         try:
             if hasattr(response, "usage_metadata") and response.usage_metadata:
-                self.last_prompt_tokens = getattr(response.usage_metadata, "prompt_token_count", None)
-                self.last_completion_tokens = getattr(response.usage_metadata, "candidates_token_count", None)
+                p_toks = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
+                c_toks = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
+                self.last_prompt_tokens = (self.last_prompt_tokens or 0) + p_toks
+                self.last_completion_tokens = (self.last_completion_tokens or 0) + c_toks
         except Exception:
             pass
 
         self.last_model_used = target_model
-        self.last_fallback_occurred = fallback_used
-        self.last_fallback_reason = fallback_msg
+        if fallback_used:
+            self.last_fallback_occurred = True
+            self.last_fallback_reason = fallback_msg
 
         raw_text = response.text or "{}"
         try:

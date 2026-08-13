@@ -107,6 +107,17 @@ def test_fake_gemini_provider_lifecycle() -> None:
     assert len(explanation.remaining_uncertainties) > 0
 
 
+def test_fake_gemini_provider_offline_metadata() -> None:
+    """Verify FakeGeminiProvider truthfully reports offline fake mode and null tokens."""
+    provider = FakeGeminiProvider()
+    meta = provider.get_execution_metadata()
+    assert meta.model_used == "offline-deterministic-fake"
+    assert meta.thinking_level == "none"
+    assert meta.prompt_tokens is None
+    assert meta.completion_tokens is None
+    assert meta.fallback_occurred is False
+
+
 def test_gemini_provider_offline_fallback() -> None:
     """Verify GeminiProvider gracefully operates in stub mode when no API key is set."""
     provider = GeminiProvider(api_key=None)
@@ -118,4 +129,5 @@ def test_gemini_provider_offline_fallback() -> None:
     provider_36 = GeminiProvider(api_key=None, preferred_model="gemini-3.6-flash")
     meta_36 = provider_36.get_execution_metadata()
     assert meta_36.model_used == "gemini-3.6-flash"
+
 

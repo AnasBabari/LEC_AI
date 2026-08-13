@@ -116,16 +116,28 @@ class ReportValidator:
             if actual.rank != (idx + 1):
                 raise ValidationError(f"Strategy {actual.strategy_id} rank field is inconsistent: {actual.rank} vs {idx+1}")
 
-        # 7. Check recommendation consistency
+        # 7. Check recommendation consistency & semantic grounding
         top_strategy = result.strategy_ranking[0]
-        if result.recommendation.winning_strategy_id != top_strategy.strategy_id:
+        rec = result.recommendation
+
+        if rec.winning_strategy_id != top_strategy.strategy_id:
             raise ValidationError(
-                f"Recommendation winner mismatch: explanation recommends '{result.recommendation.winning_strategy_id}', "
+                f"Recommendation winner mismatch: explanation recommends '{rec.winning_strategy_id}', "
                 f"but rank #1 strategy is '{top_strategy.strategy_id}'."
             )
 
+        # Grounding: Executive summary must reference the winning strategy or top cause
+        exec_summary_lower = rec.executive_summary.lower()
+        if (
+            top_strategy.name.lower() not in exec_summary_lower
+            and top_strategy.strategy_id.lower() not in exec_summary_lower
+        ):
+            raise ValidationError(
+                f"Executive summary lacks grounding: does not mention winning strategy '{top_strategy.name}'."
+            )
+
         # Check alternative strategy comparison
-        alt_id = result.recommendation.trade_off_comparison.alternative_strategy_id
+        alt_id = rec.trade_off_comparison.alternative_strategy_id
         if alt_id == top_strategy.strategy_id:
             raise ValidationError("Trade-off comparison must compare winner against a distinct alternative.")
 
@@ -133,8 +145,44 @@ class ReportValidator:
         if not alt_strategy:
             raise ValidationError(f"Trade-off comparison cites unknown alternative strategy: {alt_id}")
 
-        if not result.recommendation.grounded_contradiction_analysis:
-            raise ValidationError("Grounded contradiction analysis is required.")
+        # Grounding: Rejection rationale must articulate why the alternative is unsuitable
+        rejection_lower = rec.trade_off_comparison.rejection_rationale.lower()
+        if len(rejection_lower.split()) < 8:
+            raise ValidationError("Trade-off rejection rationale is too brief to provide defensible justification.")
+
+        # Grounding: Contradiction analysis must reference detected conflicts or conflicting evidence
+        contradiction_text = rec.grounded_contradiction_analysis
+        if not contradiction_text or len(contradiction_text.split()) < 10:
+            raise ValidationError("Grounded contradiction analysis is missing or insufficiently detailed.")
+
+        # Verify that contradiction analysis references actual conflict IDs, evidence IDs, or domain scopes
+        detected_conflict_ids = {c.id.lower() for c in result.conflicts}
+        detected_evidence_ids = {eid.lower() for c in result.conflicts for eid in c.evidence_ids}
+        detected_components = {c.component.value.lower() for c in result.conflicts}
+
+        contra_lower = contradiction_text.lower()
+        has_id_ref = any(cid in contra_lower for cid in detected_conflict_ids | detected_evidence_ids)
+        has_component_scope_ref = any(comp in contra_lower for comp in detected_components) and (
+            "probe" in contra_lower
+            or "synthetic" in contra_lower
+            or "telemetry" in contra_lower
+            or "workload" in contra_lower
+            or "latency" in contra_lower
+            or "scope" in contra_lower
+            or "healthy" in contra_lower
+            or "tension" in contra_lower
+            or "conflict" in contra_lower
+        )
+
+        if not (has_id_ref or has_component_scope_ref):
+            raise ValidationError(
+                "Contradiction analysis is not semantically grounded in detected conflicts or conflicting diagnostic evidence."
+            )
+
+        # Check for ungrounded denials of observed contradictions
+        denial_phrases = ["no contradiction", "no conflict", "contradictions do not exist", "aliens"]
+        if any(dp in contra_lower for dp in denial_phrases):
+            raise ValidationError("Contradiction analysis contains ungrounded denial of verified diagnostic conflicts.")
 
         # 8. Check execution safety boundary
         if result.execution.execution_status != "not_executed":

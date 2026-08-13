@@ -1,5 +1,5 @@
 {
-  "run_id": "RUN-8E5FD98A",
+  "run_id": "RUN-04D6D70B",
   "scenario_id": "cache_invalidation_lag",
   "state": "VALIDATED",
   "incident": {
@@ -17,32 +17,32 @@
     ]
   },
   "model_execution": {
-    "configured_primary_model": "gemini-3.7-flash",
+    "configured_primary_model": "offline-deterministic-fake",
     "configured_fallback_model": null,
-    "model_used": "gemini-3.7-flash",
-    "thinking_level": "medium",
+    "model_used": "offline-deterministic-fake",
+    "thinking_level": "none",
     "fallback_occurred": false,
     "fallback_reason": null,
-    "prompt_tokens": 420,
-    "completion_tokens": 280
+    "prompt_tokens": null,
+    "completion_tokens": null
   },
   "investigation_trace": [
     {
       "round_index": 0,
       "action_type": "state_change",
-      "timestamp": "2026-08-13T20:11:48.402161Z",
+      "timestamp": "2026-08-13T22:19:50.069836Z",
       "tool_name": null,
       "summary": "Incident alert received: High API Gateway p99 Latency (2400ms) & DB Connection Pool Saturation (92%) (Severity: CRITICAL)",
       "details": {
         "scenario_id": "cache_invalidation_lag",
-        "run_id": "RUN-8E5FD98A",
+        "run_id": "RUN-04D6D70B",
         "state": "RECEIVED"
       }
     },
     {
       "round_index": 1,
       "action_type": "model_reasoning",
-      "timestamp": "2026-08-13T20:11:48.402239Z",
+      "timestamp": "2026-08-13T22:19:50.069949Z",
       "tool_name": null,
       "summary": "Agent evaluated diagnostic state: requested 2 tool(s).",
       "details": {
@@ -66,7 +66,7 @@
     {
       "round_index": 1,
       "action_type": "tool_result",
-      "timestamp": "2026-08-13T20:11:48.402366Z",
+      "timestamp": "2026-08-13T22:19:50.070090Z",
       "tool_name": "query_telemetry",
       "summary": "Executed 'query_telemetry': Retrieved 3 telemetry metrics across 3 components.",
       "details": {
@@ -131,7 +131,7 @@
     {
       "round_index": 1,
       "action_type": "tool_result",
-      "timestamp": "2026-08-13T20:11:48.402438Z",
+      "timestamp": "2026-08-13T22:19:50.070157Z",
       "tool_name": "run_health_probes",
       "summary": "Executed 'run_health_probes': Executed synthetic health probes: 3 probe results recorded.",
       "details": {
@@ -196,7 +196,7 @@
     {
       "round_index": 2,
       "action_type": "model_reasoning",
-      "timestamp": "2026-08-13T20:11:48.402460Z",
+      "timestamp": "2026-08-13T22:19:50.070178Z",
       "tool_name": null,
       "summary": "Agent evaluated diagnostic state: requested 1 tool(s).",
       "details": {
@@ -214,7 +214,7 @@
     {
       "round_index": 2,
       "action_type": "tool_result",
-      "timestamp": "2026-08-13T20:11:48.402522Z",
+      "timestamp": "2026-08-13T22:19:50.070236Z",
       "tool_name": "fetch_operational_events",
       "summary": "Executed 'fetch_operational_events': Retrieved 3 operational event records.",
       "details": {
@@ -279,7 +279,7 @@
     {
       "round_index": 3,
       "action_type": "model_reasoning",
-      "timestamp": "2026-08-13T20:11:48.402536Z",
+      "timestamp": "2026-08-13T22:19:50.070247Z",
       "tool_name": null,
       "summary": "Agent evaluated diagnostic state: requested 0 tool(s).",
       "details": {
@@ -290,7 +290,7 @@
     {
       "round_index": 3,
       "action_type": "collection_complete",
-      "timestamp": "2026-08-13T20:11:48.402543Z",
+      "timestamp": "2026-08-13T22:19:50.070253Z",
       "tool_name": null,
       "summary": "Agent concluded multi-source evidence collection is sufficient.",
       "details": {}
@@ -298,7 +298,7 @@
     {
       "round_index": 4,
       "action_type": "state_change",
-      "timestamp": "2026-08-13T20:11:48.402617Z",
+      "timestamp": "2026-08-13T22:19:50.070331Z",
       "tool_name": null,
       "summary": "Classified 2 diagnostic conflict(s) / scope tension(s).",
       "details": {
@@ -333,7 +333,7 @@
     {
       "round_index": 5,
       "action_type": "state_change",
-      "timestamp": "2026-08-13T20:11:48.402694Z",
+      "timestamp": "2026-08-13T22:19:50.070408Z",
       "tool_name": null,
       "summary": "Agent synthesized 3 verified root-cause candidate(s).",
       "details": {
@@ -401,7 +401,7 @@
     {
       "round_index": 6,
       "action_type": "state_change",
-      "timestamp": "2026-08-13T20:11:48.402961Z",
+      "timestamp": "2026-08-13T22:19:50.070715Z",
       "tool_name": null,
       "summary": "Evaluated evidence strength: Top candidate 'Cache Invalidation Consumer Stalled' (Net Score: 14.0, Decision Weight: 73.7%).",
       "details": {}
@@ -409,10 +409,21 @@
     {
       "round_index": 7,
       "action_type": "state_change",
-      "timestamp": "2026-08-13T20:11:48.403195Z",
+      "timestamp": "2026-08-13T22:19:50.071006Z",
       "tool_name": null,
       "summary": "Ranked 5 repair strategies: Rank #1 is 'Restart Invalidation Consumer & Drain Backlog'.",
       "details": {}
+    },
+    {
+      "round_index": 8,
+      "action_type": "validation",
+      "timestamp": "2026-08-13T22:19:50.071193Z",
+      "tool_name": null,
+      "summary": "Report passed all strict validation and safety checks.",
+      "details": {
+        "state": "VALIDATED",
+        "validation_passed": true
+      }
     }
   ],
   "evidence": [

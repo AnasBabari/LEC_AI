@@ -25,12 +25,15 @@ COPY pyproject.toml README.md uv.lock ./
 COPY src/ /app/src/
 COPY data/ /app/data/
 COPY examples/ /app/examples/
-
 # Install package and dependencies
 RUN uv pip install --system --no-cache -e .
 
 # Copy built frontend assets
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
+
+# Create and switch to non-root user
+RUN useradd -u 1000 -m appuser && chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 8000
 

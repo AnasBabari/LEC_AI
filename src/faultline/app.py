@@ -2,6 +2,7 @@
 
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator
@@ -117,10 +118,11 @@ def analyze_incident(req: AnalyzeRequest) -> AnalysisResult:
             detail=f"Analysis failed domain validation: {ve}",
         ) from ve
     except Exception as e:
-        logger.exception(f"Unexpected error during analysis of '{req.scenario_id}': {e}")
+        error_id = f"ERR-{uuid.uuid4().hex[:8].upper()}"
+        logger.exception(f"Unexpected error [{error_id}] during analysis of '{req.scenario_id}': {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal incident analysis failure: {str(e)}",
+            detail=f"Internal incident analysis failure. Incident reference ID: {error_id}",
         ) from e
 
 
@@ -135,7 +137,17 @@ if frontend_dist.exists():
         if full_path.startswith("api/") or full_path == "api":
             raise HTTPException(status_code=404, detail=f"API endpoint '/{full_path}' not found")
 
-        file_path = frontend_dist / full_path
-        if file_path.is_file():
-            return FileResponse(file_path)
+        # Strictly resolve path against frontend_dist and prevent traversal escapes
+        resolved_dist = frontend_dist.resolve()
+        try:
+            target_path = (frontend_dist / full_path).resolve()
+            if not target_path.is_relative_to(resolved_dist):
+                raise HTTPException(status_code=404, detail="File not found")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        if target_path.is_file():
+            return FileResponse(target_path)
         return FileResponse(frontend_dist / "index.html")

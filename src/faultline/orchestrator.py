@@ -347,11 +347,13 @@ class IncidentOrchestrator:
         result.validation_passed = True
         result.state = LifecycleState.VALIDATED
 
-        record_trace(
-            self.max_rounds + 5,
-            "validation",
-            "Report passed all strict validation and safety checks.",
-            details={"state": LifecycleState.VALIDATED.value},
+        val_event = InvestigationTraceItem(
+            round_index=self.max_rounds + 5,
+            action_type="validation",
+            timestamp=datetime.now(timezone.utc),
+            summary="Report passed all strict validation and safety checks.",
+            details={"state": LifecycleState.VALIDATED.value, "validation_passed": True},
         )
+        result.investigation_trace.append(val_event)
 
         return result

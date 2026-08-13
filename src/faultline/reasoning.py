@@ -404,7 +404,7 @@ class StrategyRanker:
             else:
                 cause_weights[h.cause_code.value] = 0.0
 
-        scores: list[StrategyScore] = []
+        intermediate: list[tuple[float, float, float, float, str, dict[str, Any]]] = []
 
         for strat_id, strat_def in self.policy.strategies.items():
             eff_map = strat_def.get("effectiveness_by_cause", {})
@@ -426,40 +426,49 @@ class StrategyRanker:
                 + (w_affordability * affordability)
             )
 
-            score_entry = StrategyScore(
-                strategy_id=strat_id,
-                name=strat_def["name"],
-                description=strat_def["description"],
-                expected_impact=round(expected_impact, 2),
-                safety=round(safety, 2),
-                speed=round(speed, 2),
-                affordability=round(affordability, 2),
-                final_score=round(final_score, 2),
-                rank=0, # Populated after sorting
-                risk_notes=strat_def["risk_notes"],
-                reversibility=strat_def["reversibility"],
-                suggested_command=strat_def.get("suggested_command"),
-                preconditions=strat_def.get("preconditions", []),
-            )
-            scores.append(score_entry)
+            intermediate.append((
+                final_score,
+                expected_impact,
+                safety,
+                speed,
+                strat_id,
+                strat_def,
+            ))
 
-        # Deterministic sorting with tie-breaking:
-        # 1. Higher final_score
-        # 2. Higher expected_impact
-        # 3. Higher safety
-        # 4. Higher speed
+        # Deterministic sorting using full-precision unrounded floats:
+        # 1. Higher unrounded final_score
+        # 2. Higher unrounded expected_impact
+        # 3. Higher unrounded safety
+        # 4. Higher unrounded speed
         # 5. Lexicographically smaller strategy_id
-        scores.sort(
-            key=lambda s: (
-                -s.final_score,
-                -s.expected_impact,
-                -s.safety,
-                -s.speed,
-                s.strategy_id,
+        intermediate.sort(
+            key=lambda item: (
+                -item[0],
+                -item[1],
+                -item[2],
+                -item[3],
+                item[4],
             )
         )
 
-        for rank_idx, item in enumerate(scores, start=1):
-            item.rank = rank_idx
+        scores: list[StrategyScore] = []
+        for rank_idx, (f_score, exp_impact, s_safety, s_speed, strat_id, strat_def) in enumerate(intermediate, start=1):
+            scores.append(
+                StrategyScore(
+                    strategy_id=strat_id,
+                    name=strat_def["name"],
+                    description=strat_def["description"],
+                    expected_impact=round(exp_impact, 2),
+                    safety=round(s_safety, 2),
+                    speed=round(s_speed, 2),
+                    affordability=round(float(strat_def["affordability"]), 2),
+                    final_score=round(f_score, 2),
+                    rank=rank_idx,
+                    risk_notes=strat_def["risk_notes"],
+                    reversibility=strat_def["reversibility"],
+                    suggested_command=strat_def.get("suggested_command"),
+                    preconditions=strat_def.get("preconditions", []),
+                )
+            )
 
         return scores
