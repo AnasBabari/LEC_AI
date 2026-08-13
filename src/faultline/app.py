@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -18,6 +19,9 @@ from faultline.orchestrator import IncidentOrchestrator, OrchestratorError
 from faultline.reasoning import PolicyEngine
 from faultline.validation import ValidationError
 
+# Load .env file automatically at startup
+load_dotenv()
+
 logger = logging.getLogger("faultline.app")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
@@ -25,25 +29,28 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context resolving model availability and policy engine at startup."""
-    policy = PolicyEngine()
-    repo = ScenarioRepository()
+    if not hasattr(app.state, "policy") or app.state.policy is None:
+        app.state.policy = PolicyEngine()
+    if not hasattr(app.state, "scenario_repo") or app.state.scenario_repo is None:
+        app.state.scenario_repo = ScenarioRepository()
 
-    api_key = os.getenv("GEMINI_API_KEY")
-    provider: LLMProviderProtocol
-    if api_key:
-        provider = GeminiProvider(api_key=api_key)
-    else:
-        logger.info("GEMINI_API_KEY not found; starting in deterministic offline mode with FakeGeminiProvider.")
-        provider = FakeGeminiProvider()
+    existing_provider = getattr(app.state, "provider", None)
+    if existing_provider is None:
+        api_key = os.getenv("GEMINI_API_KEY")
+        provider: LLMProviderProtocol
+        if api_key and os.getenv("FAULTLINE_ENV") != "test":
+            provider = GeminiProvider(api_key=api_key)
+        else:
+            logger.info("Starting in deterministic offline mode with FakeGeminiProvider.")
+            provider = FakeGeminiProvider()
+        app.state.provider = provider
 
-    app.state.policy = policy
-    app.state.scenario_repo = repo
-    app.state.provider = provider
-    app.state.orchestrator = IncidentOrchestrator(
-        provider=provider,
-        policy=policy,
-        scenario_repo=repo,
-    )
+    if not hasattr(app.state, "orchestrator") or app.state.orchestrator is None:
+        app.state.orchestrator = IncidentOrchestrator(
+            provider=app.state.provider,
+            policy=app.state.policy,
+            scenario_repo=app.state.scenario_repo,
+        )
     yield
 
 
@@ -56,7 +63,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://localhost:8000", "http://127.0.0.1:5173", "http://127.0.0.1:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -69,12 +76,19 @@ def health_check() -> dict[str, Any]:
     api_key_configured = bool(os.getenv("GEMINI_API_KEY"))
     provider = getattr(app.state, "provider", None)
     model_name = provider.primary_model if provider else "unknown"
+    fallback_name = getattr(provider, "fallback_model", None) if provider else None
+    discovered = getattr(provider, "discovered_accessible", True) if provider else True
+    mode = "live_gemini" if (api_key_configured and isinstance(provider, GeminiProvider)) else "deterministic_fake"
+
     return {
         "status": "healthy",
         "service": "faultline",
         "version": "0.1.0",
         "gemini_configured": api_key_configured,
+        "provider_mode": mode,
         "runtime_model": model_name,
+        "fallback_model": fallback_name,
+        "discovered_accessible": discovered,
     }
 
 
@@ -92,7 +106,7 @@ def analyze_incident(req: AnalyzeRequest) -> AnalysisResult:
     try:
         result = orchestrator.analyze_scenario(req.scenario_id)
         return result
-    except FileNotFoundError as fnf:
+    except (FileNotFoundError, ValueError) as fnf:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Scenario '{req.scenario_id}' was not found in the scenario repository.",
@@ -117,6 +131,10 @@ if frontend_dist.exists():
 
     @app.get("/{full_path:path}")
     def serve_frontend(full_path: str) -> Any:
+        # Prevent API routes from serving the frontend HTML
+        if full_path.startswith("api/") or full_path == "api":
+            raise HTTPException(status_code=404, detail=f"API endpoint '/{full_path}' not found")
+
         file_path = frontend_dist / full_path
         if file_path.is_file():
             return FileResponse(file_path)

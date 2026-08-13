@@ -6,10 +6,15 @@ import os
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from faultline.diagnostics import ScenarioRepository
-from faultline.gemini import FakeGeminiProvider, GeminiProvider
+from faultline.gemini import FakeGeminiProvider, GeminiProvider, LLMProviderProtocol
 from faultline.orchestrator import IncidentOrchestrator
 from faultline.reasoning import PolicyEngine
+
+# Load .env file if present
+load_dotenv()
 
 
 def format_terminal_report(res_dict: dict) -> str:
@@ -97,6 +102,7 @@ def main() -> None:
         default="cache_invalidation_lag",
         help="Scenario ID to investigate (default: cache_invalidation_lag)",
     )
+    analyze_parser.add_argument("--offline", action="store_true", help="Run in deterministic offline mode with FakeGeminiProvider")
     analyze_parser.add_argument("--json", action="store_true", help="Output raw JSON analysis")
     analyze_parser.add_argument("--output-file", type=str, help="Save report output to file")
 
@@ -116,7 +122,12 @@ def main() -> None:
     if args.command == "analyze" or args.command is None:
         scenario_id = getattr(args, "scenario", "cache_invalidation_lag")
         api_key = os.getenv("GEMINI_API_KEY")
-        provider = GeminiProvider(api_key=api_key) if api_key else FakeGeminiProvider()
+        use_offline = getattr(args, "offline", False) or os.getenv("FAULTLINE_OFFLINE", "").lower() in ("true", "1")
+        provider: LLMProviderProtocol
+        if use_offline or not api_key:
+            provider = FakeGeminiProvider()
+        else:
+            provider = GeminiProvider(api_key=api_key)
         policy = PolicyEngine()
         repo = ScenarioRepository()
         orchestrator = IncidentOrchestrator(provider=provider, policy=policy, scenario_repo=repo)
