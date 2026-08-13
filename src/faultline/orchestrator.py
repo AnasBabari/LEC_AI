@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 class OrchestratorError(Exception):
     """Raised when an error occurs during investigation orchestration."""
+
     pass
 
 
@@ -102,6 +103,7 @@ class IncidentOrchestrator:
         # 2. State: COLLECTING (Bounded Diagnostic Loop)
         # -------------------------------------------------------------------
         current_state = LifecycleState.COLLECTING
+        session = self.provider.create_session()
         available_tools = ["query_telemetry", "run_health_probes", "fetch_operational_events"]
         executed_tool_signatures: set[str] = set()
         total_tool_attempts = 0
@@ -129,13 +131,15 @@ class IncidentOrchestrator:
 
         for round_idx in range(1, self.max_rounds + 1):
             remaining_attempts = self.max_tool_attempts - total_tool_attempts
-            if remaining_attempts <= 0:
+            if total_tool_attempts >= self.max_tool_attempts:
                 record_trace(
                     round_idx,
                     "budget_limit",
                     "Maximum tool attempt budget reached.",
                 )
                 break
+
+            remaining_attempts = self.max_tool_attempts - total_tool_attempts
 
             # Ask provider for diagnostic action batch
             action_batch = self.provider.choose_diagnostics(
@@ -144,6 +148,7 @@ class IncidentOrchestrator:
                 round_index=round_idx,
                 available_tools=available_tools,
                 remaining_attempts=remaining_attempts,
+                session=session,
             )
 
             record_trace(
@@ -199,7 +204,9 @@ class IncidentOrchestrator:
                         execute_tool(fallback_tool, {}, round_idx)
 
         if len(ledger.successful_source_groups) < 2:
-            raise OrchestratorError("Failed to collect evidence from at least 2 independent source groups within budget.")
+            raise OrchestratorError(
+                "Failed to collect evidence from at least 2 independent source groups within budget."
+            )
 
         # -------------------------------------------------------------------
         # 3. State: RECONCILING (Conflict Classification)
@@ -222,19 +229,17 @@ class IncidentOrchestrator:
             incident=fault_report,
             evidence_ledger=ledger.get_observations(),
             allowed_causes=allowed_causes,
+            session=session,
         )
 
-        # Validate Gemini draft citations immediately (C3)
-        valid_evidence_ids = ledger.get_observation_ids()
+        # Validate draft citations against policy signal rules (C3 & Finding 1)
+        evaluator = EvidenceEvaluator(self.policy)
         validated_drafts: list[HypothesisDraft] = []
         for draft in hypothesis_draft_set.hypotheses:
-            invalid_citations = [
-                eid for eid in (draft.supporting_evidence_ids + draft.opposing_evidence_ids)
-                if eid not in valid_evidence_ids
-            ]
-            if invalid_citations:
+            is_valid, errs = evaluator.validate_hypothesis_citations(draft, ledger.get_observations())
+            if not is_valid:
                 raise OrchestratorError(
-                    f"Fabricated evidence citations {invalid_citations} detected in model hypothesis for {draft.cause_code.value}."
+                    f"Ungrounded or invalid evidence citations {errs} in model hypothesis for {draft.cause_code.value}."
                 )
             validated_drafts.append(draft)
 
@@ -261,8 +266,7 @@ class IncidentOrchestrator:
         # Present hypotheses that have positive evidence or were shortlisted by the agent
         shortlisted_codes = {d.cause_code for d in validated_drafts}
         presented_hypotheses = [
-            h for h in all_evaluated_hypotheses
-            if h.cause_code in shortlisted_codes or h.net_evidence_score > 0
+            h for h in all_evaluated_hypotheses if h.cause_code in shortlisted_codes or h.net_evidence_score > 0
         ]
         if not presented_hypotheses:
             presented_hypotheses = all_evaluated_hypotheses[:4]
@@ -295,6 +299,7 @@ class IncidentOrchestrator:
             strategy_ranking=ranked_strategies,
             winning_strategy=winning_strategy,
             top_alternative=fastest_alternative,
+            session=session,
         )
 
         # Build strategy-specific execution guidance deterministically from winning strategy (H2)
@@ -303,9 +308,9 @@ class IncidentOrchestrator:
             execution_status="not_executed",
             operator_approval_required=True,
             suggested_command=winning_strat_policy.get("suggested_command", "echo 'No repair command defined'"),
-            safety_preconditions=winning_strat_policy.get("preconditions", [
-                "Verify system telemetry reaches stable baseline before operator confirmation."
-            ]),
+            safety_preconditions=winning_strat_policy.get(
+                "preconditions", ["Verify system telemetry reaches stable baseline before operator confirmation."]
+            ),
         )
 
         record_trace(
@@ -331,7 +336,7 @@ class IncidentOrchestrator:
                 "details": fault_report.details,
                 "affected_components": scenario_data["affected_components"],
             },
-            model_execution=self.provider.get_execution_metadata(),
+            model_execution=self.provider.get_execution_metadata(session=session),
             investigation_trace=trace,
             evidence=ledger.get_observations(),
             conflicts=conflicts,

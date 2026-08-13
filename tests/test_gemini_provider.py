@@ -1,9 +1,9 @@
-"""Tests for GeminiProvider and FakeGeminiProvider."""
+"""Tests for GeminiProvider, FakeGeminiProvider, and InvestigationSession isolation."""
 
 from datetime import datetime
 
 from faultline.diagnostics import DiagnosticService, EvidenceLedger, ScenarioRepository
-from faultline.gemini import FakeGeminiProvider, GeminiProvider
+from faultline.gemini import FakeGeminiProvider, GeminiProvider, InvestigationSession
 from faultline.models import (
     FaultReport,
     RootCauseCode,
@@ -98,7 +98,7 @@ def test_fake_gemini_provider_lifecycle() -> None:
         hypotheses=evaluated,
         strategy_ranking=ranked,
         winning_strategy=ranked[0],
-        top_alternative=ranked[2], # RESTART_CACHE (fastest)
+        top_alternative=ranked[2],  # RESTART_CACHE (fastest)
     )
 
     assert explanation.winning_strategy_id == "RECOVER_CONSUMER_AND_DRAIN"
@@ -118,16 +118,64 @@ def test_fake_gemini_provider_offline_metadata() -> None:
     assert meta.fallback_occurred is False
 
 
-def test_gemini_provider_offline_fallback() -> None:
-    """Verify GeminiProvider gracefully operates in stub mode when no API key is set."""
-    provider = GeminiProvider(api_key=None)
+def test_gemini_provider_offline_fallback(monkeypatch) -> None:
+    """Verify GeminiProvider gracefully operates in stub mode when no API key is available."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    provider = GeminiProvider(api_key="")
     meta = provider.get_execution_metadata()
     assert meta.configured_primary_model == "gemini-3.7-flash"
-    assert meta.model_used == "gemini-3.7-flash"
+    assert meta.model_used == "offline-deterministic-fake"
     assert not meta.fallback_occurred
 
-    provider_36 = GeminiProvider(api_key=None, preferred_model="gemini-3.6-flash")
+    provider_36 = GeminiProvider(api_key="", preferred_model="gemini-3.6-flash")
     meta_36 = provider_36.get_execution_metadata()
-    assert meta_36.model_used == "gemini-3.6-flash"
+    assert meta_36.configured_primary_model == "gemini-3.6-flash"
+    assert meta_36.model_used == "offline-deterministic-fake"
 
 
+def test_investigation_session_isolation() -> None:
+    """Verify InvestigationSession isolates execution metrics across sequential and concurrent runs."""
+    session1 = InvestigationSession(
+        configured_primary="gemini-3.7-flash",
+        configured_fallback="gemini-3.6-flash",
+        default_model="gemini-3.7-flash",
+    )
+    session2 = InvestigationSession(
+        configured_primary="gemini-3.7-flash",
+        configured_fallback="gemini-3.6-flash",
+        default_model="gemini-3.7-flash",
+    )
+
+    # Session 1 records a fallback call with token usage
+    session1.record_call(
+        model="gemini-3.6-flash",
+        fallback_used=True,
+        fallback_reason="503 Service Unavailable",
+        prompt_tokens=450,
+        completion_tokens=120,
+    )
+
+    # Session 2 records normal primary call
+    session2.record_call(
+        model="gemini-3.7-flash",
+        fallback_used=False,
+        prompt_tokens=300,
+        completion_tokens=80,
+    )
+
+    meta1 = session1.get_execution_metadata()
+    meta2 = session2.get_execution_metadata()
+
+    # Session 1 state
+    assert meta1.model_used == "gemini-3.6-flash"
+    assert meta1.fallback_occurred is True
+    assert meta1.fallback_reason == "503 Service Unavailable"
+    assert meta1.prompt_tokens == 450
+    assert meta1.completion_tokens == 120
+
+    # Session 2 state must NOT inherit Session 1 state
+    assert meta2.model_used == "gemini-3.7-flash"
+    assert meta2.fallback_occurred is False
+    assert meta2.fallback_reason is None
+    assert meta2.prompt_tokens == 300
+    assert meta2.completion_tokens == 80

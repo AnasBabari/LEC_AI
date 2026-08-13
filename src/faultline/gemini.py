@@ -1,4 +1,4 @@
-"""Gemini API integration, model discovery, structured output schemas, and fake provider for Faultline."""
+"""LLM Provider abstraction for Google Gemini API and deterministic testing."""
 
 import json
 import logging
@@ -20,18 +20,86 @@ from faultline.models import (
     ModelExecutionMetadata,
     RootCauseCode,
     StrategyScore,
+    StructuredDecisionGrounding,
     TradeOffComparison,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("faultline.gemini")
 
 T = TypeVar("T", bound=BaseModel)
 
 
-class LLMProviderProtocol(Protocol):
-    """Protocol for LLM reasoning providers."""
+class InvestigationSession:
+    """Per-investigation execution session tracking model calls, tokens, and fallback state."""
 
+    def __init__(
+        self,
+        configured_primary: str,
+        configured_fallback: Optional[str] = None,
+        default_model: Optional[str] = None,
+        thinking_level: str = "medium",
+        is_offline_fake: bool = False,
+    ) -> None:
+        self.configured_primary = configured_primary
+        self.configured_fallback = configured_fallback
+        self.model_used = default_model or configured_primary
+        self.thinking_level = thinking_level
+        self.is_offline_fake = is_offline_fake
+        self.fallback_occurred = False
+        self.fallback_reason: Optional[str] = None
+        self.prompt_tokens: Optional[int] = None
+        self.completion_tokens: Optional[int] = None
+
+    def record_call(
+        self,
+        model: str,
+        fallback_used: bool = False,
+        fallback_reason: Optional[str] = None,
+        prompt_tokens: Optional[int] = None,
+        completion_tokens: Optional[int] = None,
+    ) -> None:
+        """Record model execution metrics into this isolated session."""
+        if self.is_offline_fake:
+            return
+        self.model_used = model
+        if fallback_used:
+            self.fallback_occurred = True
+            if fallback_reason:
+                self.fallback_reason = fallback_reason
+        if prompt_tokens is not None:
+            self.prompt_tokens = (self.prompt_tokens or 0) + prompt_tokens
+        if completion_tokens is not None:
+            self.completion_tokens = (self.completion_tokens or 0) + completion_tokens
+
+    def get_execution_metadata(self) -> ModelExecutionMetadata:
+        """Return truthful execution metadata for this specific session."""
+        if self.is_offline_fake:
+            return ModelExecutionMetadata(
+                configured_primary_model=self.configured_primary,
+                configured_fallback_model=None,
+                model_used="offline-deterministic-fake",
+                thinking_level="none",
+                fallback_occurred=False,
+                fallback_reason=None,
+                prompt_tokens=None,
+                completion_tokens=None,
+            )
+        return ModelExecutionMetadata(
+            configured_primary_model=str(self.configured_primary),
+            configured_fallback_model=str(self.configured_fallback) if self.configured_fallback else None,
+            model_used=str(self.model_used),
+            thinking_level=self.thinking_level,
+            fallback_occurred=self.fallback_occurred,
+            fallback_reason=self.fallback_reason,
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
+        )
+
+
+class LLMProviderProtocol(Protocol):
     primary_model: str
+
+    def create_session(self) -> InvestigationSession: ...
 
     def choose_diagnostics(
         self,
@@ -40,16 +108,16 @@ class LLMProviderProtocol(Protocol):
         round_index: int,
         available_tools: list[str],
         remaining_attempts: int,
-    ) -> DiagnosticActionBatch:
-        ...
+        session: Optional[InvestigationSession] = None,
+    ) -> DiagnosticActionBatch: ...
 
     def synthesise_hypotheses(
         self,
         incident: FaultReport,
         evidence_ledger: list[EvidenceObservation],
         allowed_causes: list[RootCauseCode],
-    ) -> HypothesisDraftSet:
-        ...
+        session: Optional[InvestigationSession] = None,
+    ) -> HypothesisDraftSet: ...
 
     def explain_decision(
         self,
@@ -60,11 +128,10 @@ class LLMProviderProtocol(Protocol):
         strategy_ranking: list[StrategyScore],
         winning_strategy: StrategyScore,
         top_alternative: StrategyScore,
-    ) -> DecisionExplanation:
-        ...
+        session: Optional[InvestigationSession] = None,
+    ) -> DecisionExplanation: ...
 
-    def get_execution_metadata(self) -> ModelExecutionMetadata:
-        ...
+    def get_execution_metadata(self, session: Optional[InvestigationSession] = None) -> ModelExecutionMetadata: ...
 
 
 class FakeGeminiProvider:
@@ -77,10 +144,15 @@ class FakeGeminiProvider:
     ) -> None:
         self.primary_model = primary_model
         self.thinking_level = thinking_level
-        self.fallback_occurred = False
-        self.fallback_reason: Optional[str] = None
-        self.prompt_tokens: Optional[int] = None
-        self.completion_tokens: Optional[int] = None
+
+    def create_session(self) -> InvestigationSession:
+        return InvestigationSession(
+            configured_primary=self.primary_model,
+            configured_fallback=None,
+            default_model="offline-deterministic-fake",
+            thinking_level="none",
+            is_offline_fake=True,
+        )
 
     def choose_diagnostics(
         self,
@@ -89,6 +161,7 @@ class FakeGeminiProvider:
         round_index: int,
         available_tools: list[str],
         remaining_attempts: int,
+        session: Optional[InvestigationSession] = None,
     ) -> DiagnosticActionBatch:
         """Deterministically request complementary diagnostic tools."""
         collected_sources = {obs.source_group.value for obs in evidence_ledger}
@@ -98,74 +171,123 @@ class FakeGeminiProvider:
             tool_calls = [
                 DiagnosticToolCall(
                     tool_name="query_telemetry",
-                    reasoning="Collect active workload telemetry across API gateway, database, and cache layers.",
+                    reasoning="Collect end-to-end workload latency, error rates, and hit ratios across all tiers.",
                 ),
                 DiagnosticToolCall(
                     tool_name="run_health_probes",
-                    reasoning="Execute independent synthetic health probes to isolate infrastructure vs workload strain.",
+                    reasoning="Execute isolated synthetic probes to verify liveness independent of production workload.",
                 ),
             ]
-            return DiagnosticActionBatch(tool_calls=tool_calls, investigation_complete=False)
+            return DiagnosticActionBatch(
+                tool_calls=tool_calls,
+                investigation_complete=False,
+                summary="Initiating baseline telemetry and synthetic health probing.",
+            )
 
-        # Round 2: If telemetry and health probes disagree, query operational events
-        if "operational_events" not in collected_sources:
-            tool_calls = [
-                DiagnosticToolCall(
-                    tool_name="fetch_operational_events",
-                    reasoning="Fetch operational events, migrations, queue worker heartbeats, and eviction logs.",
-                )
-            ]
-            return DiagnosticActionBatch(tool_calls=tool_calls, investigation_complete=False)
+        # Round 2: Query operational events if not yet collected
+        if "operational_events" not in collected_sources and "fetch_operational_events" in available_tools:
+            return DiagnosticActionBatch(
+                tool_calls=[
+                    DiagnosticToolCall(
+                        tool_name="fetch_operational_events",
+                        reasoning="Query queue consumer heartbeats, worker crash logs, and cache eviction streams.",
+                    )
+                ],
+                investigation_complete=False,
+                summary="Collecting operational events to reconcile workload degradation vs healthy synthetic probes.",
+            )
 
-        # All 3 source groups collected: complete investigation
-        return DiagnosticActionBatch(tool_calls=[], investigation_complete=True)
+        # Complete
+        return DiagnosticActionBatch(
+            tool_calls=[],
+            investigation_complete=True,
+            summary="Sufficient multi-source evidence collected across all independent diagnostic domains.",
+        )
 
     def synthesise_hypotheses(
         self,
         incident: FaultReport,
         evidence_ledger: list[EvidenceObservation],
         allowed_causes: list[RootCauseCode],
+        session: Optional[InvestigationSession] = None,
     ) -> HypothesisDraftSet:
-        """Synthesize candidate hypotheses citing strictly valid evidence IDs (2 to 4 unique causes)."""
-        queue_evidence_ids = [
-            obs.id for obs in evidence_ledger if obs.component.value == "message_queue"
-        ]
-        cache_evidence_ids = [
-            obs.id for obs in evidence_ledger if obs.component.value == "cache"
-        ]
-        db_workload_ids = [
+        """Deterministically generate candidate root-cause hypotheses with verified citations."""
+        # Policy-grounded evidence sets
+        index_reg_ids = [
             obs.id
             for obs in evidence_ledger
-            if obs.component.value == "database" and obs.scope == "workload"
+            if obs.component.value == "database"
+            and (
+                (
+                    obs.dimension.value == "latency"
+                    and obs.scope == "migration_history"
+                    and obs.status.value == "degraded"
+                )
+                or (obs.dimension.value == "query_efficiency" and obs.status.value == "degraded")
+            )
         ]
-        db_probe_ids = [
+        queue_support_ids = [
             obs.id
             for obs in evidence_ledger
-            if obs.component.value == "database" and obs.scope == "synthetic_probe"
+            if (
+                (
+                    obs.component.value == "message_queue"
+                    and obs.dimension.value in ["backlog", "availability"]
+                    and obs.status.value in ["degraded", "failed"]
+                )
+                or (
+                    obs.component.value == "cache"
+                    and obs.dimension.value in ["freshness", "availability"]
+                    and obs.status.value == "degraded"
+                )
+                or (
+                    obs.component.value == "database"
+                    and obs.dimension.value == "latency"
+                    and obs.scope == "workload"
+                    and obs.status.value == "degraded"
+                )
+            )
         ]
-        gateway_ids = [
-            obs.id for obs in evidence_ledger if obs.component.value == "api_gateway"
-        ]
-        migration_ids = [
+        traffic_support_ids = [
             obs.id
             for obs in evidence_ledger
-            if "migration" in obs.signal or "table_scan" in obs.signal
+            if obs.component.value == "api_gateway"
+            and (
+                (obs.dimension.value == "throughput" and obs.status.value == "degraded")
+                or (obs.dimension.value == "latency" and obs.status.value == "degraded")
+            )
+        ]
+        db_cap_support_ids = [
+            obs.id
+            for obs in evidence_ledger
+            if obs.component.value == "database"
+            and obs.dimension.value == "latency"
+            and obs.scope == "workload"
+            and obs.status.value in ["degraded", "failed"]
+        ]
+        db_cap_oppose_ids = [
+            obs.id
+            for obs in evidence_ledger
+            if obs.component.value == "database"
+            and obs.scope == "synthetic_probe"
+            and obs.status.value == "healthy"
+            and obs.dimension.value in ["latency", "availability"]
         ]
 
         hypotheses: list[HypothesisDraft] = []
 
         # Scenario: Index regression
-        if migration_ids:
+        if index_reg_ids:
             hypotheses.append(
                 HypothesisDraft(
                     cause_code=RootCauseCode.DATABASE_INDEX_REGRESSION,
-                    summary="A recent schema migration dropped a critical query index, forcing full sequential table scans (480 scans/sec) on search endpoints.",
+                    summary="A recent schema migration dropped a critical query index, forcing full sequential table scans on search endpoints.",
                     causal_chain=[
                         "Schema migration dropped composite index on 'orders' table",
                         "Sequential full table scans triggered on all order search queries",
                         "Application workload latency rose to 1850ms while synthetic health probe responds in 1.5ms",
                     ],
-                    supporting_evidence_ids=migration_ids,
+                    supporting_evidence_ids=index_reg_ids,
                     opposing_evidence_ids=[],
                     unresolved_uncertainties=[
                         "Direct synthetic ping executes primary key lookup in 1.5ms, confirming engine is healthy but queries lacking index are degraded.",
@@ -174,7 +296,7 @@ class FakeGeminiProvider:
             )
 
         # Canonical Scenario: Cache invalidation consumer stall
-        if queue_evidence_ids or cache_evidence_ids:
+        if queue_support_ids:
             hypotheses.append(
                 HypothesisDraft(
                     cause_code=RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
@@ -185,7 +307,7 @@ class FakeGeminiProvider:
                         "Cache entries remained stale, causing application cache-miss cascade",
                         "Database connection pool became saturated (92%) handling direct cache misses",
                     ],
-                    supporting_evidence_ids=queue_evidence_ids + cache_evidence_ids + db_workload_ids,
+                    supporting_evidence_ids=queue_support_ids,
                     opposing_evidence_ids=[],
                     unresolved_uncertainties=[
                         "Exact root cause of the initial consumer worker OOM crash remains uninspected.",
@@ -194,42 +316,41 @@ class FakeGeminiProvider:
                 )
             )
 
-        hypotheses.append(
-            HypothesisDraft(
-                cause_code=RootCauseCode.TRAFFIC_SURGE,
-                summary="Unprecedented external traffic surge is overwhelming the ingress gateway.",
-                causal_chain=[
-                    "High traffic volume overwhelms API Gateway",
-                    "Backend services experience elevated latencies",
-                ],
-                supporting_evidence_ids=gateway_ids,
-                opposing_evidence_ids=[],
-                unresolved_uncertainties=[
-                    "Gateway health endpoint is 200 OK and direct infrastructure probes are healthy.",
-                ],
+        if traffic_support_ids:
+            hypotheses.append(
+                HypothesisDraft(
+                    cause_code=RootCauseCode.TRAFFIC_SURGE,
+                    summary="Unprecedented external traffic surge is overwhelming the ingress gateway.",
+                    causal_chain=[
+                        "External ingress traffic rate increased significantly",
+                        "Gateway latency rose under peak concurrent client connections",
+                    ],
+                    supporting_evidence_ids=traffic_support_ids,
+                    opposing_evidence_ids=[],
+                    unresolved_uncertainties=[
+                        "Upstream client traffic distribution and regional source breakdown.",
+                    ],
+                )
             )
-        )
 
-        hypotheses.append(
-            HypothesisDraft(
-                cause_code=RootCauseCode.DATABASE_CAPACITY_DEGRADATION,
-                summary="Database cluster capacity is degraded or failing under standard production query load.",
-                causal_chain=[
-                    "Database engine exhausted resources",
-                    "Connection pool saturated / table scans elevated",
-                    "API Gateway response times spiked",
-                ],
-                supporting_evidence_ids=db_workload_ids,
-                opposing_evidence_ids=db_probe_ids,
-                unresolved_uncertainties=[
-                    "Direct synthetic probe responds in <2ms with healthy CPU, indicating DB engine is not fundamentally degraded.",
-                ],
+        if db_cap_support_ids:
+            hypotheses.append(
+                HypothesisDraft(
+                    cause_code=RootCauseCode.DATABASE_CAPACITY_DEGRADATION,
+                    summary="Database cluster capacity is degraded or failing under standard production query load.",
+                    causal_chain=[
+                        "Database engine exhausted connection slots or CPU capacity",
+                        "Query throughput collapsed under normal load",
+                    ],
+                    supporting_evidence_ids=db_cap_support_ids,
+                    opposing_evidence_ids=db_cap_oppose_ids,
+                    unresolved_uncertainties=[
+                        "Direct synthetic probe responds in <2ms with healthy CPU, indicating DB engine is not fundamentally degraded.",
+                    ],
+                )
             )
-        )
 
-        # Filter to allowed codes and limit to 4 unique causes
-        filtered = [h for h in hypotheses if h.cause_code in allowed_causes][:4]
-        return HypothesisDraftSet(hypotheses=filtered)
+        return HypothesisDraftSet(hypotheses=hypotheses[:4])
 
     def explain_decision(
         self,
@@ -240,10 +361,30 @@ class FakeGeminiProvider:
         strategy_ranking: list[StrategyScore],
         winning_strategy: StrategyScore,
         top_alternative: StrategyScore,
+        session: Optional[InvestigationSession] = None,
     ) -> DecisionExplanation:
-        """Provide defensible written justification for strategy ranking."""
+        """Provide defensible written justification for strategy ranking with structured grounding."""
         top_hyp = hypotheses[0] if hypotheses else None
         top_hyp_name = top_hyp.name if top_hyp else "Primary Cause"
+
+        # Determine alternative advantage dimension and values
+        alt_dim = "none"
+        alt_val = 0.0
+        win_val = 0.0
+        if top_alternative.speed > winning_strategy.speed:
+            alt_dim = "speed"
+            alt_val = top_alternative.speed
+            win_val = winning_strategy.speed
+        elif top_alternative.affordability > winning_strategy.affordability:
+            alt_dim = "affordability"
+            alt_val = top_alternative.affordability
+            win_val = winning_strategy.affordability
+        elif top_alternative.safety > winning_strategy.safety:
+            alt_dim = "safety"
+            alt_val = top_alternative.safety
+            win_val = winning_strategy.safety
+
+        rejection_risk = top_alternative.risk_notes or "Operational risk"
 
         # Grounded contradiction analysis
         has_migration = any("migration" in obs.signal for obs in evidence_ledger)
@@ -271,6 +412,20 @@ class FakeGeminiProvider:
                 f"Recovering the consumer safely restores end-to-end cache invalidation without risking database collapse."
             )
 
+        grounding = StructuredDecisionGrounding(
+            winning_strategy_id=winning_strategy.strategy_id,
+            winning_strategy_name=winning_strategy.name,
+            top_cause_code=top_hyp.cause_code if top_hyp else RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
+            reconciled_conflict_ids=[c.id for c in conflicts],
+            reconciled_evidence_ids=[eid for c in conflicts for eid in c.evidence_ids],
+            alternative_strategy_id=top_alternative.strategy_id,
+            alternative_strategy_name=top_alternative.name,
+            alternative_advantage_dimension=alt_dim,
+            alternative_advantage_value=alt_val,
+            winning_advantage_value=win_val,
+            rejection_risk_factor=rejection_risk,
+        )
+
         return DecisionExplanation(
             executive_summary=(
                 f"Recommended Action: '{winning_strategy.name}' (Final Score: {winning_strategy.final_score}/100). "
@@ -291,23 +446,19 @@ class FakeGeminiProvider:
             remaining_uncertainties=(
                 top_hyp.unresolved_uncertainties if top_hyp else ["Execution duration under live production workload."]
             ),
+            grounding=grounding,
+            cited_conflict_ids=[c.id for c in conflicts],
+            cited_evidence_ids=[eid for c in conflicts for eid in c.evidence_ids],
         )
 
-    def get_execution_metadata(self) -> ModelExecutionMetadata:
-        return ModelExecutionMetadata(
-            configured_primary_model=self.primary_model,
-            configured_fallback_model=None,
-            model_used="offline-deterministic-fake",
-            thinking_level="none",
-            fallback_occurred=False,
-            fallback_reason=None,
-            prompt_tokens=None,
-            completion_tokens=None,
-        )
+    def get_execution_metadata(self, session: Optional[InvestigationSession] = None) -> ModelExecutionMetadata:
+        if session:
+            return session.get_execution_metadata()
+        return self.create_session().get_execution_metadata()
 
 
 class GeminiProvider:
-    """Production provider using Google GenAI SDK with startup model discovery, robust retry, and fallback."""
+    """Production provider using Google GenAI SDK with startup model discovery, robust retry, and per-session isolation."""
 
     def __init__(
         self,
@@ -319,21 +470,26 @@ class GeminiProvider:
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.thinking_level = os.getenv("GEMINI_THINKING_LEVEL", thinking_level)
         self.configured_primary: str = preferred_model or os.getenv("GEMINI_MODEL") or "gemini-3.7-flash"
-        self.configured_fallback: Optional[str] = fallback_model or os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-3.6-flash"
+        self.configured_fallback: Optional[str] = (
+            fallback_model or os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-3.6-flash"
+        )
 
         self.primary_model: str = self.configured_primary
         self.fallback_model: Optional[str] = self.configured_fallback
         self.discovered_accessible: bool = False
 
-        # Per-run execution metrics
-        self.last_model_used: str = self.primary_model
-        self.last_fallback_occurred: bool = False
-        self.last_fallback_reason: Optional[str] = None
-        self.last_prompt_tokens: Optional[int] = None
-        self.last_completion_tokens: Optional[int] = None
-
         self._client: Optional[Any] = None
         self._initialize_and_probe_models()
+
+    def create_session(self) -> InvestigationSession:
+        """Create a fresh isolated session for a single incident investigation."""
+        return InvestigationSession(
+            configured_primary=self.primary_model,
+            configured_fallback=self.fallback_model,
+            default_model=self.primary_model,
+            thinking_level=self.thinking_level,
+            is_offline_fake=not bool(self._client),
+        )
 
     def _initialize_and_probe_models(self) -> None:
         """Initialize Google GenAI client and verify accessible model IDs once at startup."""
@@ -343,6 +499,7 @@ class GeminiProvider:
 
         try:
             from google import genai
+
             self._client = genai.Client(api_key=self.api_key)
 
             # Probe available models once on startup
@@ -373,7 +530,6 @@ class GeminiProvider:
                 self.primary_model = self.configured_primary
                 self.discovered_accessible = False
 
-            self.last_model_used = self.primary_model
             logger.info(f"Resolved Gemini runtime model: primary={self.primary_model}, fallback={self.fallback_model}")
 
         except ImportError:
@@ -385,6 +541,7 @@ class GeminiProvider:
         self,
         prompt: str,
         response_schema: Type[T],
+        session: Optional[InvestigationSession] = None,
     ) -> T:
         """Call Gemini API requesting structured output conforming to a Pydantic schema with retry/fallback."""
         if not self._client:
@@ -436,20 +593,24 @@ class GeminiProvider:
             else:
                 raise primary_network_err
 
-        # Capture and accumulate token usage
+        # Capture and accumulate token usage into session
+        p_toks: Optional[int] = None
+        c_toks: Optional[int] = None
         try:
             if hasattr(response, "usage_metadata") and response.usage_metadata:
-                p_toks = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
-                c_toks = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
-                self.last_prompt_tokens = (self.last_prompt_tokens or 0) + p_toks
-                self.last_completion_tokens = (self.last_completion_tokens or 0) + c_toks
+                p_toks = getattr(response.usage_metadata, "prompt_token_count", None)
+                c_toks = getattr(response.usage_metadata, "candidates_token_count", None)
         except Exception:
             pass
 
-        self.last_model_used = target_model
-        if fallback_used:
-            self.last_fallback_occurred = True
-            self.last_fallback_reason = fallback_msg
+        if session:
+            session.record_call(
+                model=target_model,
+                fallback_used=fallback_used,
+                fallback_reason=fallback_msg,
+                prompt_tokens=p_toks,
+                completion_tokens=c_toks,
+            )
 
         raw_text = response.text or "{}"
         try:
@@ -463,6 +624,20 @@ class GeminiProvider:
                 contents=repair_prompt,
                 config=config,
             )
+            # Record repair tokens if session is present
+            try:
+                if hasattr(repaired_response, "usage_metadata") and repaired_response.usage_metadata:
+                    rp_toks = getattr(repaired_response.usage_metadata, "prompt_token_count", None)
+                    rc_toks = getattr(repaired_response.usage_metadata, "candidates_token_count", None)
+                    if session:
+                        session.record_call(
+                            model=target_model,
+                            prompt_tokens=rp_toks,
+                            completion_tokens=rc_toks,
+                        )
+            except Exception:
+                pass
+
             repaired_text = repaired_response.text or "{}"
             return cast(T, response_schema.model_validate_json(repaired_text))
 
@@ -473,18 +648,24 @@ class GeminiProvider:
         round_index: int,
         available_tools: list[str],
         remaining_attempts: int,
+        session: Optional[InvestigationSession] = None,
     ) -> DiagnosticActionBatch:
         """Ask Gemini to select the next diagnostic tool based on current observations."""
         if not self._client:
             fake = FakeGeminiProvider(self.primary_model, self.thinking_level)
             return fake.choose_diagnostics(
-                incident, evidence_ledger, round_index, available_tools, remaining_attempts
+                incident, evidence_ledger, round_index, available_tools, remaining_attempts, session=session
             )
 
-        evidence_summary = "\n".join([
-            f"- [{obs.id}] ({obs.source_group.value}) {obs.component.value}: {obs.signal}={obs.value}{obs.unit} -> status: {obs.status.value} (scope: {obs.scope})"
-            for obs in evidence_ledger
-        ]) or "None yet."
+        evidence_summary = (
+            "\n".join(
+                [
+                    f"- [{obs.id}] ({obs.source_group.value}) {obs.component.value}: {obs.signal}={obs.value}{obs.unit} -> status: {obs.status.value} (scope: {obs.scope})"
+                    for obs in evidence_ledger
+                ]
+            )
+            or "None yet."
+        )
 
         prompt = f"""You are Faultline, an expert operational diagnostic agent.
 Investigate this incident:
@@ -505,23 +686,26 @@ Goal:
 Gather cross-source diagnostic evidence from complementary sources (workload telemetry, synthetic health probes, operational events) to discover and reconcile conflicting signals across components.
 Select 1-3 tool calls for this round. If you already have comprehensive coverage across telemetry, health probes, and operational events, set investigation_complete=True with empty tool_calls.
 """
-        return self._call_gemini_structured(prompt, DiagnosticActionBatch)
+        return self._call_gemini_structured(prompt, DiagnosticActionBatch, session=session)
 
     def synthesise_hypotheses(
         self,
         incident: FaultReport,
         evidence_ledger: list[EvidenceObservation],
         allowed_causes: list[RootCauseCode],
+        session: Optional[InvestigationSession] = None,
     ) -> HypothesisDraftSet:
         """Ask Gemini to synthesize plausible root-cause hypotheses citing ledger IDs."""
         if not self._client:
             fake = FakeGeminiProvider(self.primary_model, self.thinking_level)
-            return fake.synthesise_hypotheses(incident, evidence_ledger, allowed_causes)
+            return fake.synthesise_hypotheses(incident, evidence_ledger, allowed_causes, session=session)
 
-        evidence_table = "\n".join([
-            f"- [{obs.id}] ({obs.source_group.value}) {obs.component.value}: {obs.signal}={obs.value}{obs.unit} (status: {obs.status.value}, scope: {obs.scope})"
-            for obs in evidence_ledger
-        ])
+        evidence_table = "\n".join(
+            [
+                f"- [{obs.id}] ({obs.source_group.value}) {obs.component.value}: {obs.signal}={obs.value}{obs.unit} (status: {obs.status.value}, scope: {obs.scope})"
+                for obs in evidence_ledger
+            ]
+        )
         allowed_causes_str = ", ".join([c.value for c in allowed_causes])
 
         prompt = f"""You are Faultline. Synthesize 2 to 4 plausible root-cause hypotheses for this incident.
@@ -540,7 +724,7 @@ Instructions:
 4. Explicitly list any unresolved uncertainties.
 5. You MUST return between 2 and 4 UNIQUE hypotheses. No duplicate cause codes allowed.
 """
-        return self._call_gemini_structured(prompt, HypothesisDraftSet)
+        return self._call_gemini_structured(prompt, HypothesisDraftSet, session=session)
 
     def explain_decision(
         self,
@@ -551,6 +735,7 @@ Instructions:
         strategy_ranking: list[StrategyScore],
         winning_strategy: StrategyScore,
         top_alternative: StrategyScore,
+        session: Optional[InvestigationSession] = None,
     ) -> DecisionExplanation:
         """Ask Gemini to provide a defensible executive justification for the fixed ranking."""
         if not self._client:
@@ -563,27 +748,39 @@ Instructions:
                 strategy_ranking,
                 winning_strategy,
                 top_alternative,
+                session=session,
             )
 
-        evidence_table = "\n".join([
-            f"- [{obs.id}] ({obs.source_group.value}) {obs.component.value}: {obs.signal}={obs.value}{obs.unit} -> status: {obs.status.value} (scope: {obs.scope})"
-            for obs in evidence_ledger
-        ])
+        evidence_table = "\n".join(
+            [
+                f"- [{obs.id}] ({obs.source_group.value}) {obs.component.value}: {obs.signal}={obs.value}{obs.unit} -> status: {obs.status.value} (scope: {obs.scope})"
+                for obs in evidence_ledger
+            ]
+        )
 
-        conflicts_str = "\n".join([
-            f"- {c.id} ({c.conflict_type.value}) on {c.component.value}: {c.headline} (Evidence: {c.evidence_ids})"
-            for c in conflicts
-        ]) or "None"
+        conflicts_str = (
+            "\n".join(
+                [
+                    f"- {c.id} ({c.conflict_type.value}) on {c.component.value}: {c.headline} (Evidence: {c.evidence_ids})"
+                    for c in conflicts
+                ]
+            )
+            or "None"
+        )
 
-        hypotheses_str = "\n".join([
-            f"- {h.name} (Code: {h.cause_code.value}): Net Evidence Score = {h.net_evidence_score}, Decision Weight = {h.decision_weight}%, Band = {h.strength_band.value}"
-            for h in hypotheses
-        ])
+        hypotheses_str = "\n".join(
+            [
+                f"- {h.name} (Code: {h.cause_code.value}): Net Evidence Score = {h.net_evidence_score}, Decision Weight = {h.decision_weight}%, Band = {h.strength_band.value}"
+                for h in hypotheses
+            ]
+        )
 
-        ranking_str = "\n".join([
-            f"{s.rank}. {s.name} (ID: {s.strategy_id}) -> Final Score: {s.final_score} [Impact: {s.expected_impact}, Safety: {s.safety}, Speed: {s.speed}, Affordability: {s.affordability}]"
-            for s in strategy_ranking
-        ])
+        ranking_str = "\n".join(
+            [
+                f"{s.rank}. {s.name} (ID: {s.strategy_id}) -> Final Score: {s.final_score} [Impact: {s.expected_impact}, Safety: {s.safety}, Speed: {s.speed}, Affordability: {s.affordability}]"
+                for s in strategy_ranking
+            ]
+        )
 
         prompt = f"""You are Faultline. Write a defensible executive explanation justifying why the top-ranked repair strategy is preferred.
 
@@ -610,16 +807,44 @@ Requirements:
 3. Grounded Contradiction Analysis: Explain how the conflicting diagnostics (e.g. database workload latency vs healthy direct probe) are reconciled.
 4. Remaining Uncertainties: State any operational unknowns for the operator.
 """
-        return self._call_gemini_structured(prompt, DecisionExplanation)
+        explanation = self._call_gemini_structured(prompt, DecisionExplanation, session=session)
 
-    def get_execution_metadata(self) -> ModelExecutionMetadata:
-        return ModelExecutionMetadata(
-            configured_primary_model=str(self.configured_primary),
-            configured_fallback_model=str(self.configured_fallback) if self.configured_fallback else None,
-            model_used=str(self.last_model_used),
-            thinking_level=self.thinking_level,
-            fallback_occurred=self.last_fallback_occurred,
-            fallback_reason=self.last_fallback_reason,
-            prompt_tokens=self.last_prompt_tokens,
-            completion_tokens=self.last_completion_tokens,
+        # Deterministically attach authoritative grounding skeleton
+        top_hyp = hypotheses[0] if hypotheses else None
+        alt_dim = "none"
+        alt_val = 0.0
+        win_val = 0.0
+        if top_alternative.speed > winning_strategy.speed:
+            alt_dim = "speed"
+            alt_val = top_alternative.speed
+            win_val = winning_strategy.speed
+        elif top_alternative.affordability > winning_strategy.affordability:
+            alt_dim = "affordability"
+            alt_val = top_alternative.affordability
+            win_val = winning_strategy.affordability
+        elif top_alternative.safety > winning_strategy.safety:
+            alt_dim = "safety"
+            alt_val = top_alternative.safety
+            win_val = winning_strategy.safety
+
+        explanation.grounding = StructuredDecisionGrounding(
+            winning_strategy_id=winning_strategy.strategy_id,
+            winning_strategy_name=winning_strategy.name,
+            top_cause_code=top_hyp.cause_code if top_hyp else RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
+            reconciled_conflict_ids=[c.id for c in conflicts],
+            reconciled_evidence_ids=[eid for c in conflicts for eid in c.evidence_ids],
+            alternative_strategy_id=top_alternative.strategy_id,
+            alternative_strategy_name=top_alternative.name,
+            alternative_advantage_dimension=alt_dim,
+            alternative_advantage_value=alt_val,
+            winning_advantage_value=win_val,
+            rejection_risk_factor=top_alternative.risk_notes or "Operational risk",
         )
+        explanation.cited_conflict_ids = [c.id for c in conflicts]
+        explanation.cited_evidence_ids = [eid for c in conflicts for eid in c.evidence_ids]
+        return explanation
+
+    def get_execution_metadata(self, session: Optional[InvestigationSession] = None) -> ModelExecutionMetadata:
+        if session:
+            return session.get_execution_metadata()
+        return self.create_session().get_execution_metadata()

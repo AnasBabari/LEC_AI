@@ -113,17 +113,20 @@ class ScenarioRepository:
         for path in sorted(self.scenarios_dir.glob("*.json")):
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                results.append({
-                    "id": data["id"],
-                    "title": data["title"],
-                    "description": data["description"],
-                    "affected_components": data["affected_components"],
-                })
+                results.append(
+                    {
+                        "id": data["id"],
+                        "title": data["title"],
+                        "description": data["description"],
+                        "affected_components": data["affected_components"],
+                    }
+                )
         return results
 
     def get_scenario(self, scenario_id: str) -> dict[str, Any]:
         """Load a specific scenario fixture by ID with path-traversal protection."""
         import re
+
         if not re.match(r"^[a-zA-Z0-9_-]+$", scenario_id):
             raise ValueError(f"Invalid scenario ID format: '{scenario_id}'")
 

@@ -79,4 +79,3 @@ def test_orchestrator_index_regression_run() -> None:
     assert result.strategy_ranking[0].strategy_id == "REBUILD_DATABASE_INDEX"
     assert result.strategy_ranking[0].rank == 1
     assert result.recommendation.winning_strategy_id == "REBUILD_DATABASE_INDEX"
-

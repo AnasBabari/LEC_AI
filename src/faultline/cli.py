@@ -26,7 +26,9 @@ def format_terminal_report(res_dict: dict) -> str:
     lines.append(f"Run ID:        {res_dict['run_id']}")
     lines.append(f"Scenario:      {res_dict['scenario_id']}")
     lines.append(f"Lifecycle:     {res_dict['state']} (Validation Passed: {res_dict['validation_passed']})")
-    lines.append(f"Runtime Model: {res_dict['model_execution']['model_used']} (Thinking: {res_dict['model_execution']['thinking_level']})")
+    lines.append(
+        f"Runtime Model: {res_dict['model_execution']['model_used']} (Thinking: {res_dict['model_execution']['thinking_level']})"
+    )
     lines.append("-" * 80)
 
     # Incident Alert
@@ -39,10 +41,12 @@ def format_terminal_report(res_dict: dict) -> str:
     # Evidence Ledger
     lines.append("\n[2] APPEND-ONLY EVIDENCE LEDGER (Collected Across Independent Sources):")
     lines.append(f"    {'ID':<8} {'GROUP':<20} {'COMPONENT':<15} {'STATUS':<10} {'SIGNAL & VALUE'}")
-    lines.append(f"    {'-'*7} {'-'*18} {'-'*13} {'-'*8} {'-'*30}")
+    lines.append(f"    {'-' * 7} {'-' * 18} {'-' * 13} {'-' * 8} {'-' * 30}")
     for obs in res_dict["evidence"]:
         val_str = f"{obs['signal']} = {obs['value']} {obs['unit']}"
-        lines.append(f"    {obs['id']:<8} {obs['source_group']:<20} {obs['component']:<15} {obs['status']:<10} {val_str}")
+        lines.append(
+            f"    {obs['id']:<8} {obs['source_group']:<20} {obs['component']:<15} {obs['status']:<10} {val_str}"
+        )
 
     # Conflicts
     lines.append("\n[3] DETECTED CONTRADICTIONS & SCOPE TENSIONS:")
@@ -56,14 +60,18 @@ def format_terminal_report(res_dict: dict) -> str:
     lines.append("\n[4] EVALUATED ROOT-CAUSE HYPOTHESES (Deterministic Scoring):")
     for hyp in res_dict["hypotheses"]:
         lines.append(f"    * {hyp['name']} [{hyp['strength_band']}]")
-        lines.append(f"      - Net Score:       {hyp['net_evidence_score']} (Support: {hyp['supporting_score']}, Oppose: {hyp['opposing_score']})")
+        lines.append(
+            f"      - Net Score:       {hyp['net_evidence_score']} (Support: {hyp['supporting_score']}, Oppose: {hyp['opposing_score']})"
+        )
         lines.append(f"      - Decision Weight: {hyp['decision_weight']}% (*Policy-derived weight, not probability)")
         lines.append(f"      - Summary:         {hyp['summary']}")
 
     # Strategy Ranking
     lines.append("\n[5] 4-DIMENSIONAL REPAIR STRATEGY RANKING:")
-    lines.append(f"    {'RANK':<6} {'STRATEGY NAME':<45} {'IMPACT (60%)':<14} {'SAFETY (20%)':<14} {'SPEED (15%)':<12} {'COST (5%)':<10} {'FINAL SCORE'}")
-    lines.append(f"    {'-'*4} {'-'*43} {'-'*12} {'-'*12} {'-'*10} {'-'*8} {'-'*11}")
+    lines.append(
+        f"    {'RANK':<6} {'STRATEGY NAME':<45} {'IMPACT (60%)':<14} {'SAFETY (20%)':<14} {'SPEED (15%)':<12} {'COST (5%)':<10} {'FINAL SCORE'}"
+    )
+    lines.append(f"    {'-' * 4} {'-' * 43} {'-' * 12} {'-' * 12} {'-' * 10} {'-' * 8} {'-' * 11}")
     for s in res_dict["strategy_ranking"]:
         lines.append(
             f"    #{s['rank']:<5} {s['name']:<45} {s['expected_impact']:<14.1f} {s['safety']:<14.1f} {s['speed']:<12.1f} {s['affordability']:<10.1f} {s['final_score']:<11.1f}"
@@ -74,7 +82,9 @@ def format_terminal_report(res_dict: dict) -> str:
     lines.append("\n[6] EXECUTIVE TRADE-OFF DEFENSE & JUSTIFICATION:")
     lines.append(f"    Executive Summary: {rec['executive_summary']}")
     alt = rec["trade_off_comparison"]
-    lines.append(f"    Trade-Off Defense: Why #{res_dict['strategy_ranking'][0]['rank']} beats {alt['alternative_strategy_name']}:")
+    lines.append(
+        f"    Trade-Off Defense: Why #{res_dict['strategy_ranking'][0]['rank']} beats {alt['alternative_strategy_name']}:"
+    )
     lines.append(f"      - Alternative Advantage: {alt['alternative_advantage']}")
     lines.append(f"      - Rejection Rationale:   {alt['rejection_rationale']}")
     lines.append(f"    Contradiction Analysis:    {rec['grounded_contradiction_analysis']}")
@@ -102,7 +112,9 @@ def main() -> None:
         default="cache_invalidation_lag",
         help="Scenario ID to investigate (default: cache_invalidation_lag)",
     )
-    analyze_parser.add_argument("--offline", action="store_true", help="Run in deterministic offline mode with FakeGeminiProvider")
+    analyze_parser.add_argument(
+        "--offline", action="store_true", help="Run in deterministic offline mode with FakeGeminiProvider"
+    )
     analyze_parser.add_argument("--json", action="store_true", help="Output raw JSON analysis")
     analyze_parser.add_argument("--output-file", type=str, help="Save report output to file")
 
