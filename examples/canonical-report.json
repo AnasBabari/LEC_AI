@@ -1,5 +1,5 @@
 {
-  "run_id": "RUN-04D6D70B",
+  "run_id": "RUN-FEF37228",
   "scenario_id": "cache_invalidation_lag",
   "state": "VALIDATED",
   "incident": {
@@ -20,29 +20,33 @@
     "configured_primary_model": "offline-deterministic-fake",
     "configured_fallback_model": null,
     "model_used": "offline-deterministic-fake",
+    "models_used": [
+      "offline-deterministic-fake"
+    ],
     "thinking_level": "none",
     "fallback_occurred": false,
     "fallback_reason": null,
     "prompt_tokens": null,
-    "completion_tokens": null
+    "completion_tokens": null,
+    "call_trace": []
   },
   "investigation_trace": [
     {
       "round_index": 0,
       "action_type": "state_change",
-      "timestamp": "2026-08-13T22:19:50.069836Z",
+      "timestamp": "2026-08-13T23:38:24.655520Z",
       "tool_name": null,
       "summary": "Incident alert received: High API Gateway p99 Latency (2400ms) & DB Connection Pool Saturation (92%) (Severity: CRITICAL)",
       "details": {
         "scenario_id": "cache_invalidation_lag",
-        "run_id": "RUN-04D6D70B",
+        "run_id": "RUN-FEF37228",
         "state": "RECEIVED"
       }
     },
     {
       "round_index": 1,
       "action_type": "model_reasoning",
-      "timestamp": "2026-08-13T22:19:50.069949Z",
+      "timestamp": "2026-08-13T23:38:24.655598Z",
       "tool_name": null,
       "summary": "Agent evaluated diagnostic state: requested 2 tool(s).",
       "details": {
@@ -52,13 +56,13 @@
             "tool_name": "query_telemetry",
             "component": null,
             "dimension": null,
-            "reasoning": "Collect active workload telemetry across API gateway, database, and cache layers."
+            "reasoning": "Collect end-to-end workload latency, error rates, and hit ratios across all tiers."
           },
           {
             "tool_name": "run_health_probes",
             "component": null,
             "dimension": null,
-            "reasoning": "Execute independent synthetic health probes to isolate infrastructure vs workload strain."
+            "reasoning": "Execute isolated synthetic probes to verify liveness independent of production workload."
           }
         ]
       }
@@ -66,7 +70,7 @@
     {
       "round_index": 1,
       "action_type": "tool_result",
-      "timestamp": "2026-08-13T22:19:50.070090Z",
+      "timestamp": "2026-08-13T23:38:24.655719Z",
       "tool_name": "query_telemetry",
       "summary": "Executed 'query_telemetry': Retrieved 3 telemetry metrics across 3 components.",
       "details": {
@@ -131,7 +135,7 @@
     {
       "round_index": 1,
       "action_type": "tool_result",
-      "timestamp": "2026-08-13T22:19:50.070157Z",
+      "timestamp": "2026-08-13T23:38:24.655780Z",
       "tool_name": "run_health_probes",
       "summary": "Executed 'run_health_probes': Executed synthetic health probes: 3 probe results recorded.",
       "details": {
@@ -196,7 +200,7 @@
     {
       "round_index": 2,
       "action_type": "model_reasoning",
-      "timestamp": "2026-08-13T22:19:50.070178Z",
+      "timestamp": "2026-08-13T23:38:24.655803Z",
       "tool_name": null,
       "summary": "Agent evaluated diagnostic state: requested 1 tool(s).",
       "details": {
@@ -206,7 +210,7 @@
             "tool_name": "fetch_operational_events",
             "component": null,
             "dimension": null,
-            "reasoning": "Fetch operational events, migrations, queue worker heartbeats, and eviction logs."
+            "reasoning": "Query queue consumer heartbeats, worker crash logs, and cache eviction streams."
           }
         ]
       }
@@ -214,7 +218,7 @@
     {
       "round_index": 2,
       "action_type": "tool_result",
-      "timestamp": "2026-08-13T22:19:50.070236Z",
+      "timestamp": "2026-08-13T23:38:24.655862Z",
       "tool_name": "fetch_operational_events",
       "summary": "Executed 'fetch_operational_events': Retrieved 3 operational event records.",
       "details": {
@@ -279,7 +283,7 @@
     {
       "round_index": 3,
       "action_type": "model_reasoning",
-      "timestamp": "2026-08-13T22:19:50.070247Z",
+      "timestamp": "2026-08-13T23:38:24.655875Z",
       "tool_name": null,
       "summary": "Agent evaluated diagnostic state: requested 0 tool(s).",
       "details": {
@@ -290,7 +294,7 @@
     {
       "round_index": 3,
       "action_type": "collection_complete",
-      "timestamp": "2026-08-13T22:19:50.070253Z",
+      "timestamp": "2026-08-13T23:38:24.655881Z",
       "tool_name": null,
       "summary": "Agent concluded multi-source evidence collection is sufficient.",
       "details": {}
@@ -298,7 +302,7 @@
     {
       "round_index": 4,
       "action_type": "state_change",
-      "timestamp": "2026-08-13T22:19:50.070331Z",
+      "timestamp": "2026-08-13T23:38:24.655953Z",
       "tool_name": null,
       "summary": "Classified 2 diagnostic conflict(s) / scope tension(s).",
       "details": {
@@ -333,7 +337,7 @@
     {
       "round_index": 5,
       "action_type": "state_change",
-      "timestamp": "2026-08-13T22:19:50.070408Z",
+      "timestamp": "2026-08-13T23:38:24.656073Z",
       "tool_name": null,
       "summary": "Agent synthesized 3 verified root-cause candidate(s).",
       "details": {
@@ -348,12 +352,11 @@
               "Database connection pool became saturated (92%) handling direct cache misses"
             ],
             "supporting_evidence_ids": [
+              "EV-002",
+              "EV-003",
               "EV-007",
               "EV-008",
-              "EV-003",
-              "EV-005",
-              "EV-009",
-              "EV-002"
+              "EV-009"
             ],
             "opposing_evidence_ids": [],
             "unresolved_uncertainties": [
@@ -365,25 +368,23 @@
             "cause_code": "TRAFFIC_SURGE",
             "summary": "Unprecedented external traffic surge is overwhelming the ingress gateway.",
             "causal_chain": [
-              "High traffic volume overwhelms API Gateway",
-              "Backend services experience elevated latencies"
+              "External ingress traffic rate increased significantly",
+              "Gateway latency rose under peak concurrent client connections"
             ],
             "supporting_evidence_ids": [
-              "EV-001",
-              "EV-006"
+              "EV-001"
             ],
             "opposing_evidence_ids": [],
             "unresolved_uncertainties": [
-              "Gateway health endpoint is 200 OK and direct infrastructure probes are healthy."
+              "Upstream client traffic distribution and regional source breakdown."
             ]
           },
           {
             "cause_code": "DATABASE_CAPACITY_DEGRADATION",
             "summary": "Database cluster capacity is degraded or failing under standard production query load.",
             "causal_chain": [
-              "Database engine exhausted resources",
-              "Connection pool saturated / table scans elevated",
-              "API Gateway response times spiked"
+              "Database engine exhausted connection slots or CPU capacity",
+              "Query throughput collapsed under normal load"
             ],
             "supporting_evidence_ids": [
               "EV-002"
@@ -401,7 +402,7 @@
     {
       "round_index": 6,
       "action_type": "state_change",
-      "timestamp": "2026-08-13T22:19:50.070715Z",
+      "timestamp": "2026-08-13T23:38:24.656323Z",
       "tool_name": null,
       "summary": "Evaluated evidence strength: Top candidate 'Cache Invalidation Consumer Stalled' (Net Score: 14.0, Decision Weight: 73.7%).",
       "details": {}
@@ -409,7 +410,7 @@
     {
       "round_index": 7,
       "action_type": "state_change",
-      "timestamp": "2026-08-13T22:19:50.071006Z",
+      "timestamp": "2026-08-13T23:38:24.656458Z",
       "tool_name": null,
       "summary": "Ranked 5 repair strategies: Rank #1 is 'Restart Invalidation Consumer & Drain Backlog'.",
       "details": {}
@@ -417,7 +418,7 @@
     {
       "round_index": 8,
       "action_type": "validation",
-      "timestamp": "2026-08-13T22:19:50.071193Z",
+      "timestamp": "2026-08-13T23:38:24.656871Z",
       "tool_name": null,
       "summary": "Report passed all strict validation and safety checks.",
       "details": {
@@ -701,8 +702,8 @@
       "name": "External Traffic Surge",
       "summary": "Unprecedented external traffic surge is overwhelming the ingress gateway.",
       "causal_chain": [
-        "High traffic volume overwhelms API Gateway",
-        "Backend services experience elevated latencies"
+        "External ingress traffic rate increased significantly",
+        "Gateway latency rose under peak concurrent client connections"
       ],
       "supporting_observations": [
         {
@@ -726,7 +727,7 @@
       "decision_weight": 26.3,
       "strength_band": "WEAK",
       "unresolved_uncertainties": [
-        "Gateway health endpoint is 200 OK and direct infrastructure probes are healthy."
+        "Upstream client traffic distribution and regional source breakdown."
       ]
     },
     {
@@ -734,9 +735,8 @@
       "name": "Database Capacity Degradation",
       "summary": "Database cluster capacity is degraded or failing under standard production query load.",
       "causal_chain": [
-        "Database engine exhausted resources",
-        "Connection pool saturated / table scans elevated",
-        "API Gateway response times spiked"
+        "Database engine exhausted connection slots or CPU capacity",
+        "Query throughput collapsed under normal load"
       ],
       "supporting_observations": [
         {
@@ -881,7 +881,28 @@
     "remaining_uncertainties": [
       "Exact root cause of the initial consumer worker OOM crash remains uninspected.",
       "Time required to drain the 42,000 message backlog under current traffic."
-    ]
+    ],
+    "grounding": {
+      "winning_strategy_id": "RECOVER_CONSUMER_AND_DRAIN",
+      "winning_strategy_name": "Restart Invalidation Consumer & Drain Backlog",
+      "top_cause_code": "CACHE_INVALIDATION_CONSUMER_STALLED",
+      "reconciled_conflict_ids": [
+        "CONF-001",
+        "CONF-002"
+      ],
+      "reconciled_evidence_ids": [
+        "EV-002",
+        "EV-004",
+        "EV-003",
+        "EV-005"
+      ],
+      "alternative_strategy_id": "RESTART_CACHE",
+      "alternative_strategy_name": "Flush & Restart Cache Cluster",
+      "alternative_advantage_dimension": "speed",
+      "alternative_advantage_value": 100.0,
+      "winning_advantage_value": 50.0,
+      "rejection_risk_factor": "Causes immediate 100% cache stampede onto the database, risking total database collapse while queue consumer remains broken."
+    }
   },
   "execution": {
     "execution_status": "not_executed",

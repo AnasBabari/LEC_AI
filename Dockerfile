@@ -24,7 +24,6 @@ COPY --from=ghcr.io/astral-sh/uv:0.5.24 /uv /bin/uv
 COPY pyproject.toml README.md uv.lock ./
 COPY src/ /app/src/
 COPY data/ /app/data/
-COPY examples/ /app/examples/
 # Install package and dependencies
 RUN uv pip install --system --no-cache -e .
 
