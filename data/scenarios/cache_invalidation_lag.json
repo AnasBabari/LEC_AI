@@ -1,0 +1,139 @@
+{
+  "id": "cache_invalidation_lag",
+  "title": "Degraded Database Latency with Stale Cache and Stalled Invalidation Queue",
+  "incident_at": "2026-08-13T10:00:00Z",
+  "description": "Production alerts report spiking API Gateway p99 response times and severe database connection pool saturation. Primary database telemetry suggests database strain, but synthetic probes report the database engine is completely healthy while the cache invalidation queue is accumulating a large unconsumed backlog.",
+  "affected_components": ["api_gateway", "database", "cache", "message_queue"],
+  "initial_fault_report": {
+    "source": "pagerduty_alert",
+    "severity": "CRITICAL",
+    "headline": "High API Gateway p99 Latency (2400ms) & DB Connection Pool Saturation (92%)",
+    "reported_at": "2026-08-13T10:00:00Z",
+    "details": "User-facing services report checkout latency spikes. Initial alert indicates database exhaustion."
+  },
+  "diagnostics": {
+    "telemetry": [
+      {
+        "signal": "gateway_p99_latency",
+        "component": "api_gateway",
+        "dimension": "latency",
+        "status": "degraded",
+        "value": 2400.0,
+        "unit": "ms",
+        "offset_minutes": -2,
+        "window_duration_seconds": 300,
+        "scope": "workload",
+        "reliability": "aggregated",
+        "details": "Ingress API Gateway 99th percentile response time elevated from 45ms baseline to 2400ms."
+      },
+      {
+        "signal": "db_workload_connection_saturation",
+        "component": "database",
+        "dimension": "latency",
+        "status": "degraded",
+        "value": 92.0,
+        "unit": "percent",
+        "offset_minutes": -3,
+        "window_duration_seconds": 300,
+        "scope": "workload",
+        "reliability": "aggregated",
+        "details": "Active application database connection pool at 92% capacity; average query latency under production workload rose to 185ms."
+      },
+      {
+        "signal": "cache_hit_ratio",
+        "component": "cache",
+        "dimension": "availability",
+        "status": "degraded",
+        "value": 34.2,
+        "unit": "percent",
+        "offset_minutes": -2,
+        "window_duration_seconds": 300,
+        "scope": "workload",
+        "reliability": "aggregated",
+        "details": "Cache hit ratio collapsed from normal 92% to 34.2%, causing massive cache-miss traffic storm directly to database."
+      }
+    ],
+    "health_probe": [
+      {
+        "signal": "db_synthetic_direct_probe",
+        "component": "database",
+        "dimension": "latency",
+        "status": "healthy",
+        "value": 1.8,
+        "unit": "ms",
+        "offset_minutes": -1,
+        "window_duration_seconds": 60,
+        "scope": "synthetic_probe",
+        "reliability": "verified",
+        "details": "Direct synthetic query probe (indexed lookup & SELECT 1) executing in 1.8ms; DB CPU at 18%, I/O healthy, no lock contention."
+      },
+      {
+        "signal": "cache_cluster_ping",
+        "component": "cache",
+        "dimension": "availability",
+        "status": "healthy",
+        "value": 0.5,
+        "unit": "ms",
+        "offset_minutes": -1,
+        "window_duration_seconds": 60,
+        "scope": "synthetic_probe",
+        "reliability": "verified",
+        "details": "Cache cluster nodes responding to TCP health pings in 0.5ms; cluster memory and process status fully operational."
+      },
+      {
+        "signal": "gateway_health_endpoint",
+        "component": "api_gateway",
+        "dimension": "availability",
+        "status": "healthy",
+        "value": 200.0,
+        "unit": "http_status",
+        "offset_minutes": -1,
+        "window_duration_seconds": 60,
+        "scope": "synthetic_probe",
+        "reliability": "verified",
+        "details": "Gateway internal /healthz endpoint responding with HTTP 200 in 2.1ms."
+      }
+    ],
+    "operational_events": [
+      {
+        "signal": "invalidation_queue_consumer_heartbeat",
+        "component": "message_queue",
+        "dimension": "availability",
+        "status": "failed",
+        "value": 0.0,
+        "unit": "heartbeat",
+        "offset_minutes": -18,
+        "window_duration_seconds": 1200,
+        "scope": "worker_lifecycle",
+        "reliability": "verified",
+        "details": "Cache-invalidation event consumer worker pool crashed / heartbeat lost 18 minutes ago. Process exited with OOM killer code 137."
+      },
+      {
+        "signal": "invalidation_queue_backlog",
+        "component": "message_queue",
+        "dimension": "backlog",
+        "status": "failed",
+        "value": 42850.0,
+        "unit": "messages",
+        "offset_minutes": -2,
+        "window_duration_seconds": 300,
+        "scope": "queue_depth",
+        "reliability": "verified",
+        "details": "Unconsumed cache invalidation event backlog accumulated to 42,850 messages, continuing to grow at 120 msgs/sec."
+      },
+      {
+        "signal": "cache_stale_mutation_divergence",
+        "component": "cache",
+        "dimension": "freshness",
+        "status": "degraded",
+        "value": 28400.0,
+        "unit": "stale_keys",
+        "offset_minutes": -4,
+        "window_duration_seconds": 300,
+        "scope": "data_consistency",
+        "reliability": "aggregated",
+        "details": "Divergence scan detected ~28,400 cache keys containing outdated entity state relative to primary database tables."
+      }
+    ]
+  }
+}

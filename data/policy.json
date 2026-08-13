@@ -1,0 +1,261 @@
+{
+  "scoring_weights": {
+    "impact": 0.60,
+    "safety": 0.20,
+    "speed": 0.15,
+    "affordability": 0.05
+  },
+  "reliability_weights": {
+    "verified": 3,
+    "aggregated": 2,
+    "advisory": 1
+  },
+  "freshness_thresholds_seconds": {
+    "current_max": 300,
+    "recent_max": 1800
+  },
+  "freshness_weights": {
+    "current": 2,
+    "recent": 1,
+    "stale": 0
+  },
+  "directness_weights": {
+    "direct": 3,
+    "indirect": 2,
+    "contextual": 1
+  },
+  "cause_catalogue": {
+    "CACHE_INVALIDATION_CONSUMER_STALLED": {
+      "name": "Cache Invalidation Consumer Stalled",
+      "description": "The message queue consumer responsible for processing cache eviction/invalidation events has stalled. Mutations are committed in DB but not invalidated in cache, leading to high stale read rates, cache-miss query cascades, and DB connection pool saturation.",
+      "signal_rules": [
+        {
+          "component": "message_queue",
+          "dimension": "backlog",
+          "statuses": ["degraded", "failed"],
+          "relationship": "supports",
+          "directness": "direct"
+        },
+        {
+          "component": "message_queue",
+          "dimension": "availability",
+          "statuses": ["degraded", "failed"],
+          "relationship": "supports",
+          "directness": "direct"
+        },
+        {
+          "component": "cache",
+          "dimension": "freshness",
+          "statuses": ["degraded", "failed"],
+          "relationship": "supports",
+          "directness": "direct"
+        },
+        {
+          "component": "cache",
+          "dimension": "freshness",
+          "statuses": ["healthy"],
+          "relationship": "opposes",
+          "directness": "direct"
+        },
+        {
+          "component": "cache",
+          "dimension": "availability",
+          "statuses": ["degraded"],
+          "relationship": "supports",
+          "directness": "indirect"
+        },
+        {
+          "component": "database",
+          "dimension": "latency",
+          "statuses": ["degraded"],
+          "scope": "workload",
+          "relationship": "supports",
+          "directness": "indirect"
+        },
+        {
+          "component": "api_gateway",
+          "dimension": "latency",
+          "statuses": ["degraded"],
+          "relationship": "supports",
+          "directness": "contextual"
+        }
+      ]
+    },
+    "DATABASE_CAPACITY_DEGRADATION": {
+      "name": "Database Capacity Degradation",
+      "description": "The underlying database engine, CPU, or storage is exhausted or failing under standard query load.",
+      "signal_rules": [
+        {
+          "component": "database",
+          "dimension": "latency",
+          "statuses": ["degraded", "failed"],
+          "scope": "workload",
+          "relationship": "supports",
+          "directness": "indirect"
+        },
+        {
+          "component": "database",
+          "dimension": "latency",
+          "statuses": ["healthy"],
+          "scope": "synthetic_probe",
+          "relationship": "opposes",
+          "directness": "direct"
+        },
+        {
+          "component": "database",
+          "dimension": "availability",
+          "statuses": ["healthy"],
+          "relationship": "opposes",
+          "directness": "direct"
+        }
+      ]
+    },
+    "CACHE_NODE_FAILURE": {
+      "name": "Cache Node Hardware / Process Crash",
+      "description": "Cache cluster nodes are unreachable, dead, or failing health checks.",
+      "signal_rules": [
+        {
+          "component": "cache",
+          "dimension": "availability",
+          "statuses": ["failed"],
+          "relationship": "supports",
+          "directness": "direct"
+        },
+        {
+          "component": "cache",
+          "dimension": "availability",
+          "statuses": ["healthy"],
+          "relationship": "opposes",
+          "directness": "direct"
+        }
+      ]
+    },
+    "TRAFFIC_SURGE": {
+      "name": "External Traffic Surge",
+      "description": "Unprecedented incoming traffic volume is exceeding capacity at the ingress layer.",
+      "signal_rules": [
+        {
+          "component": "api_gateway",
+          "dimension": "throughput",
+          "statuses": ["degraded"],
+          "relationship": "supports",
+          "directness": "direct"
+        },
+        {
+          "component": "api_gateway",
+          "dimension": "throughput",
+          "statuses": ["healthy"],
+          "relationship": "opposes",
+          "directness": "direct"
+        },
+        {
+          "component": "api_gateway",
+          "dimension": "latency",
+          "statuses": ["degraded"],
+          "relationship": "supports",
+          "directness": "contextual"
+        }
+      ]
+    },
+    "DATABASE_INDEX_REGRESSION": {
+      "name": "Database Index Regression",
+      "description": "A dropped, invalid, or suboptimal index on critical tables forces full table scans.",
+      "signal_rules": [
+        {
+          "component": "database",
+          "dimension": "latency",
+          "statuses": ["degraded"],
+          "relationship": "supports",
+          "directness": "direct"
+        }
+      ]
+    },
+    "REPLICA_LAG": {
+      "name": "Database Read Replica Lag",
+      "description": "Replication stream from database primary to read replicas is delayed.",
+      "signal_rules": [
+        {
+          "component": "database",
+          "dimension": "freshness",
+          "statuses": ["degraded", "failed"],
+          "relationship": "supports",
+          "directness": "direct"
+        }
+      ]
+    }
+  },
+  "strategies": {
+    "RECOVER_CONSUMER_AND_DRAIN": {
+      "id": "RECOVER_CONSUMER_AND_DRAIN",
+      "name": "Restart Invalidation Consumer & Drain Backlog",
+      "description": "Restart the stalled queue worker consumer pool and accelerate draining of accumulated cache invalidation events.",
+      "effectiveness_by_cause": {
+        "CACHE_INVALIDATION_CONSUMER_STALLED": 100,
+        "TRAFFIC_SURGE": 0,
+        "DATABASE_CAPACITY_DEGRADATION": 0,
+        "CACHE_NODE_FAILURE": 0,
+        "DATABASE_INDEX_REGRESSION": 0,
+        "REPLICA_LAG": 0
+      },
+      "safety": 75,
+      "speed": 50,
+      "affordability": 75,
+      "risk_notes": "Slight transient message broker load while processing backlogged events; completely safe for persistent storage.",
+      "reversibility": "High — consumer workers can be paused or restarted without data mutation loss."
+    },
+    "THROTTLE_TRAFFIC": {
+      "id": "THROTTLE_TRAFFIC",
+      "name": "Apply API Gateway Rate Limiting & Load Shedding",
+      "description": "Enable selective ingress throttling and rate-limiting to shed load from degraded backend tiers.",
+      "effectiveness_by_cause": {
+        "CACHE_INVALIDATION_CONSUMER_STALLED": 50,
+        "TRAFFIC_SURGE": 100,
+        "DATABASE_CAPACITY_DEGRADATION": 75,
+        "CACHE_NODE_FAILURE": 25,
+        "DATABASE_INDEX_REGRESSION": 50,
+        "REPLICA_LAG": 25
+      },
+      "safety": 75,
+      "speed": 75,
+      "affordability": 75,
+      "risk_notes": "Temporarily degrades client experience with HTTP 429 responses, but prevents total service outage.",
+      "reversibility": "Immediate via gateway configuration change."
+    },
+    "RESTART_CACHE": {
+      "id": "RESTART_CACHE",
+      "name": "Flush & Restart Cache Cluster",
+      "description": "Perform an immediate hard flush and restart of the cache cluster nodes.",
+      "effectiveness_by_cause": {
+        "CACHE_INVALIDATION_CONSUMER_STALLED": 25,
+        "TRAFFIC_SURGE": 0,
+        "DATABASE_CAPACITY_DEGRADATION": 0,
+        "CACHE_NODE_FAILURE": 100,
+        "DATABASE_INDEX_REGRESSION": 0,
+        "REPLICA_LAG": 0
+      },
+      "safety": 25,
+      "speed": 100,
+      "affordability": 100,
+      "risk_notes": "Causes immediate 100% cache stampede onto the database, risking total database collapse while queue consumer remains broken.",
+      "reversibility": "Irreversible — completely purges warm cache entries in memory."
+    },
+    "FAILOVER_DATABASE": {
+      "id": "FAILOVER_DATABASE",
+      "name": "Trigger Database Replica Failover",
+      "description": "Force promotion of secondary database replica to primary instance.",
+      "effectiveness_by_cause": {
+        "CACHE_INVALIDATION_CONSUMER_STALLED": 0,
+        "TRAFFIC_SURGE": 0,
+        "DATABASE_CAPACITY_DEGRADATION": 100,
+        "CACHE_NODE_FAILURE": 0,
+        "DATABASE_INDEX_REGRESSION": 0,
+        "REPLICA_LAG": 0
+      },
+      "safety": 25,
+      "speed": 50,
+      "affordability": 25,
+      "risk_notes": "High operational risk, connection drops during DNS switch, potential data loss if replica has lag, and leaves the cache invalidation root cause untouched.",
+      "reversibility": "Low — requires manual database reprovisioning and resynchronization."
+    }
+  }
+}
