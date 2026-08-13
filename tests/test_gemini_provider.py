@@ -148,15 +148,17 @@ def test_investigation_session_isolation() -> None:
 
     # Session 1 records a fallback call with token usage
     session1.record_call(
+        task="choose_diagnostics",
         model="gemini-3.6-flash",
         fallback_used=True,
-        fallback_reason="503 Service Unavailable",
+        fallback_reason="service_unavailable (RuntimeError)",
         prompt_tokens=450,
         completion_tokens=120,
     )
 
     # Session 2 records normal primary call
     session2.record_call(
+        task="synthesise_hypotheses",
         model="gemini-3.7-flash",
         fallback_used=False,
         prompt_tokens=300,
@@ -168,13 +170,19 @@ def test_investigation_session_isolation() -> None:
 
     # Session 1 state
     assert meta1.model_used == "gemini-3.6-flash"
+    assert "gemini-3.6-flash" in meta1.models_used
+    assert len(meta1.call_trace) == 1
+    assert meta1.call_trace[0].task == "choose_diagnostics"
     assert meta1.fallback_occurred is True
-    assert meta1.fallback_reason == "503 Service Unavailable"
+    assert meta1.fallback_reason == "service_unavailable (RuntimeError)"
     assert meta1.prompt_tokens == 450
     assert meta1.completion_tokens == 120
 
     # Session 2 state must NOT inherit Session 1 state
     assert meta2.model_used == "gemini-3.7-flash"
+    assert meta2.models_used == ["gemini-3.7-flash"]
+    assert len(meta2.call_trace) == 1
+    assert meta2.call_trace[0].task == "synthesise_hypotheses"
     assert meta2.fallback_occurred is False
     assert meta2.fallback_reason is None
     assert meta2.prompt_tokens == 300

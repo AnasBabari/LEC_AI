@@ -8,6 +8,7 @@ from typing import Any, Optional, Protocol, Type, TypeVar, cast
 from pydantic import BaseModel, ValidationError
 
 from faultline.models import (
+    AdvantageDimension,
     Conflict,
     DecisionExplanation,
     DiagnosticActionBatch,
@@ -17,6 +18,7 @@ from faultline.models import (
     FaultReport,
     HypothesisDraft,
     HypothesisDraftSet,
+    ModelCallTrace,
     ModelExecutionMetadata,
     RootCauseCode,
     StrategyScore,
@@ -27,6 +29,23 @@ from faultline.models import (
 logger = logging.getLogger("faultline.gemini")
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def sanitize_error_category(err: Exception) -> str:
+    """Classify an upstream model error into a safe, non-leaking category without exposing private tokens or paths."""
+    err_type = type(err).__name__
+    err_str = str(err).lower()
+    if "429" in err_str or "quota" in err_str or "rate" in err_str:
+        return f"rate_limit_exceeded ({err_type})"
+    if "503" in err_str or "unavailable" in err_str:
+        return f"service_unavailable ({err_type})"
+    if "timeout" in err_str or "timed out" in err_str:
+        return f"request_timeout ({err_type})"
+    if "404" in err_str or "not found" in err_str:
+        return f"model_not_found ({err_type})"
+    if "401" in err_str or "403" in err_str or "auth" in err_str or "permission" in err_str:
+        return f"upstream_auth_error ({err_type})"
+    return f"primary_unavailable ({err_type})"
 
 
 class InvestigationSession:
@@ -43,15 +62,20 @@ class InvestigationSession:
         self.configured_primary = configured_primary
         self.configured_fallback = configured_fallback
         self.model_used = default_model or configured_primary
+        self.models_used: list[str] = (
+            [default_model or configured_primary] if not is_offline_fake else ["offline-deterministic-fake"]
+        )
         self.thinking_level = thinking_level
         self.is_offline_fake = is_offline_fake
         self.fallback_occurred = False
         self.fallback_reason: Optional[str] = None
         self.prompt_tokens: Optional[int] = None
         self.completion_tokens: Optional[int] = None
+        self.call_trace: list[ModelCallTrace] = []
 
     def record_call(
         self,
+        task: str,
         model: str,
         fallback_used: bool = False,
         fallback_reason: Optional[str] = None,
@@ -62,6 +86,8 @@ class InvestigationSession:
         if self.is_offline_fake:
             return
         self.model_used = model
+        if model not in self.models_used:
+            self.models_used.append(model)
         if fallback_used:
             self.fallback_occurred = True
             if fallback_reason:
@@ -70,6 +96,15 @@ class InvestigationSession:
             self.prompt_tokens = (self.prompt_tokens or 0) + prompt_tokens
         if completion_tokens is not None:
             self.completion_tokens = (self.completion_tokens or 0) + completion_tokens
+        self.call_trace.append(
+            ModelCallTrace(
+                task=task,
+                model=model,
+                fallback_used=fallback_used,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+        )
 
     def get_execution_metadata(self) -> ModelExecutionMetadata:
         """Return truthful execution metadata for this specific session."""
@@ -78,21 +113,25 @@ class InvestigationSession:
                 configured_primary_model=self.configured_primary,
                 configured_fallback_model=None,
                 model_used="offline-deterministic-fake",
+                models_used=["offline-deterministic-fake"],
                 thinking_level="none",
                 fallback_occurred=False,
                 fallback_reason=None,
                 prompt_tokens=None,
                 completion_tokens=None,
+                call_trace=[],
             )
         return ModelExecutionMetadata(
             configured_primary_model=str(self.configured_primary),
             configured_fallback_model=str(self.configured_fallback) if self.configured_fallback else None,
             model_used=str(self.model_used),
+            models_used=list(self.models_used),
             thinking_level=self.thinking_level,
             fallback_occurred=self.fallback_occurred,
             fallback_reason=self.fallback_reason,
             prompt_tokens=self.prompt_tokens,
             completion_tokens=self.completion_tokens,
+            call_trace=list(self.call_trace),
         )
 
 
@@ -420,7 +459,7 @@ class FakeGeminiProvider:
             reconciled_evidence_ids=[eid for c in conflicts for eid in c.evidence_ids],
             alternative_strategy_id=top_alternative.strategy_id,
             alternative_strategy_name=top_alternative.name,
-            alternative_advantage_dimension=alt_dim,
+            alternative_advantage_dimension=AdvantageDimension(alt_dim),
             alternative_advantage_value=alt_val,
             winning_advantage_value=win_val,
             rejection_risk_factor=rejection_risk,
@@ -447,8 +486,6 @@ class FakeGeminiProvider:
                 top_hyp.unresolved_uncertainties if top_hyp else ["Execution duration under live production workload."]
             ),
             grounding=grounding,
-            cited_conflict_ids=[c.id for c in conflicts],
-            cited_evidence_ids=[eid for c in conflicts for eid in c.evidence_ids],
         )
 
     def get_execution_metadata(self, session: Optional[InvestigationSession] = None) -> ModelExecutionMetadata:
@@ -541,6 +578,7 @@ class GeminiProvider:
         self,
         prompt: str,
         response_schema: Type[T],
+        task: str = "structured_call",
         session: Optional[InvestigationSession] = None,
     ) -> T:
         """Call Gemini API requesting structured output conforming to a Pydantic schema with retry/fallback."""
@@ -575,12 +613,13 @@ class GeminiProvider:
                 config=config,
             )
         except Exception as primary_network_err:
-            logger.warning(f"Primary model {target_model} call failed with network error: {primary_network_err}")
+            sanitized_reason = sanitize_error_category(primary_network_err)
+            logger.warning(f"Primary model {target_model} call failed with error: {sanitized_reason}")
             if self.fallback_model and self.fallback_model != target_model:
                 logger.info(f"Retrying with fallback model {self.fallback_model}")
                 target_model = self.fallback_model
                 fallback_used = True
-                fallback_msg = str(primary_network_err)
+                fallback_msg = sanitized_reason
                 fallback_config = types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=response_schema,
@@ -605,6 +644,7 @@ class GeminiProvider:
 
         if session:
             session.record_call(
+                task=task,
                 model=target_model,
                 fallback_used=fallback_used,
                 fallback_reason=fallback_msg,
@@ -631,6 +671,7 @@ class GeminiProvider:
                     rc_toks = getattr(repaired_response.usage_metadata, "candidates_token_count", None)
                     if session:
                         session.record_call(
+                            task=f"{task}_repair",
                             model=target_model,
                             prompt_tokens=rp_toks,
                             completion_tokens=rc_toks,
@@ -686,7 +727,7 @@ Goal:
 Gather cross-source diagnostic evidence from complementary sources (workload telemetry, synthetic health probes, operational events) to discover and reconcile conflicting signals across components.
 Select 1-3 tool calls for this round. If you already have comprehensive coverage across telemetry, health probes, and operational events, set investigation_complete=True with empty tool_calls.
 """
-        return self._call_gemini_structured(prompt, DiagnosticActionBatch, session=session)
+        return self._call_gemini_structured(prompt, DiagnosticActionBatch, task="choose_diagnostics", session=session)
 
     def synthesise_hypotheses(
         self,
@@ -695,36 +736,42 @@ Select 1-3 tool calls for this round. If you already have comprehensive coverage
         allowed_causes: list[RootCauseCode],
         session: Optional[InvestigationSession] = None,
     ) -> HypothesisDraftSet:
-        """Ask Gemini to synthesize plausible root-cause hypotheses citing ledger IDs."""
+        """Ask Gemini to shortlist root cause hypotheses strictly from the closed catalogue."""
         if not self._client:
             fake = FakeGeminiProvider(self.primary_model, self.thinking_level)
             return fake.synthesise_hypotheses(incident, evidence_ledger, allowed_causes, session=session)
 
         evidence_table = "\n".join(
             [
-                f"- [{obs.id}] ({obs.source_group.value}) {obs.component.value}: {obs.signal}={obs.value}{obs.unit} (status: {obs.status.value}, scope: {obs.scope})"
+                f"- ID: {obs.id} | Group: {obs.source_group.value} | Component: {obs.component.value} | Signal: {obs.signal} | Value: {obs.value} {obs.unit} | Status: {obs.status.value} | Scope: {obs.scope}"
                 for obs in evidence_ledger
             ]
         )
-        allowed_causes_str = ", ".join([c.value for c in allowed_causes])
 
-        prompt = f"""You are Faultline. Synthesize 2 to 4 plausible root-cause hypotheses for this incident.
-Incident: {incident.headline}
+        catalog_str = "\n".join([f"- {c.value}" for c in allowed_causes])
 
-Evidence Ledger Observations (YOU MUST CITE ONLY THESE VALID 'id' STRINGS):
+        prompt = f"""You are Faultline, a root-cause reasoning engine.
+Analyze the following multi-source evidence ledger and synthesize 2 to 4 distinct root cause hypotheses.
+
+Incident:
+Headline: {incident.headline}
+Reported Details: {incident.details}
+
+Collected Evidence Ledger:
 {evidence_table}
 
-Allowed Cause Codes (Choose 2-4 UNIQUE causes strictly from this catalogue):
-{allowed_causes_str}
+STRICT RULE: You must select hypotheses ONLY from this approved catalogue of RootCauseCodes:
+{catalog_str}
 
-Instructions:
-1. For each chosen cause code, construct a clear summary and step-by-step causal chain.
-2. Cite all supporting evidence IDs from the ledger above (e.g. ["EV-001", "EV-003"]). Do NOT hallucinate IDs.
-3. Cite all opposing evidence IDs from the ledger above (e.g. ["EV-004"]).
-4. Explicitly list any unresolved uncertainties.
-5. You MUST return between 2 and 4 UNIQUE hypotheses. No duplicate cause codes allowed.
+For each hypothesis:
+1. cause_code: Must be one of the exact string codes above.
+2. summary: 1-2 sentence high-level explanation.
+3. causal_chain: Step-by-step causal chain linking root cause to symptoms.
+4. supporting_evidence_ids: List of exact evidence IDs (e.g. ["EV-001", "EV-003"]) that support this hypothesis. Must not be empty.
+5. opposing_evidence_ids: List of exact evidence IDs (e.g. ["EV-004"]) that conflict with or challenge this hypothesis.
+6. unresolved_uncertainties: Operational unknowns or questions remaining.
 """
-        return self._call_gemini_structured(prompt, HypothesisDraftSet, session=session)
+        return self._call_gemini_structured(prompt, HypothesisDraftSet, task="synthesise_hypotheses", session=session)
 
     def explain_decision(
         self,
@@ -737,7 +784,7 @@ Instructions:
         top_alternative: StrategyScore,
         session: Optional[InvestigationSession] = None,
     ) -> DecisionExplanation:
-        """Ask Gemini to provide a defensible executive justification for the fixed ranking."""
+        """Ask Gemini to generate defensible executive reasoning defending the deterministic strategy ranking."""
         if not self._client:
             fake = FakeGeminiProvider(self.primary_model, self.thinking_level)
             return fake.explain_decision(
@@ -753,7 +800,7 @@ Instructions:
 
         evidence_table = "\n".join(
             [
-                f"- [{obs.id}] ({obs.source_group.value}) {obs.component.value}: {obs.signal}={obs.value}{obs.unit} -> status: {obs.status.value} (scope: {obs.scope})"
+                f"- {obs.id} ({obs.source_group.value}): {obs.component.value} {obs.signal}={obs.value}{obs.unit} [{obs.status.value}]"
                 for obs in evidence_ledger
             ]
         )
@@ -807,7 +854,9 @@ Requirements:
 3. Grounded Contradiction Analysis: Explain how the conflicting diagnostics (e.g. database workload latency vs healthy direct probe) are reconciled.
 4. Remaining Uncertainties: State any operational unknowns for the operator.
 """
-        explanation = self._call_gemini_structured(prompt, DecisionExplanation, session=session)
+        explanation = self._call_gemini_structured(
+            prompt, DecisionExplanation, task="explain_decision", session=session
+        )
 
         # Deterministically attach authoritative grounding skeleton
         top_hyp = hypotheses[0] if hypotheses else None
@@ -835,13 +884,11 @@ Requirements:
             reconciled_evidence_ids=[eid for c in conflicts for eid in c.evidence_ids],
             alternative_strategy_id=top_alternative.strategy_id,
             alternative_strategy_name=top_alternative.name,
-            alternative_advantage_dimension=alt_dim,
+            alternative_advantage_dimension=AdvantageDimension(alt_dim),
             alternative_advantage_value=alt_val,
             winning_advantage_value=win_val,
             rejection_risk_factor=top_alternative.risk_notes or "Operational risk",
         )
-        explanation.cited_conflict_ids = [c.id for c in conflicts]
-        explanation.cited_evidence_ids = [eid for c in conflicts for eid in c.evidence_ids]
         return explanation
 
     def get_execution_metadata(self, session: Optional[InvestigationSession] = None) -> ModelExecutionMetadata:
