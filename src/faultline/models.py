@@ -149,12 +149,22 @@ class Conflict(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class DiagnosticToolName(str, Enum):
+    """Supported diagnostic tool names."""
+
+    QUERY_TELEMETRY = "query_telemetry"
+    RUN_HEALTH_PROBES = "run_health_probes"
+    FETCH_OPERATIONAL_EVENTS = "fetch_operational_events"
+
+
 class DiagnosticToolCall(BaseModel):
     """A diagnostic tool invocation request from Gemini."""
 
-    tool_name: str = Field(..., description="Tool name: query_telemetry, run_health_probes, fetch_operational_events")
-    component: Optional[str] = Field(default=None, description="Optional target component to focus on")
-    dimension: Optional[str] = Field(default=None, description="Optional target dimension to focus on")
+    tool_name: DiagnosticToolName = Field(
+        ..., description="Tool name: query_telemetry, run_health_probes, fetch_operational_events"
+    )
+    component: Optional[ComponentEnum] = Field(default=None, description="Optional target component to focus on")
+    dimension: Optional[HealthDimension] = Field(default=None, description="Optional target dimension to focus on")
     reasoning: str = Field(..., description="Why this diagnostic tool is requested next")
 
 
@@ -231,6 +241,24 @@ class StructuredDecisionGrounding(BaseModel):
     alternative_advantage_value: float
     winning_advantage_value: float
     rejection_risk_factor: str
+
+
+class DecisionNarrativeDraft(BaseModel):
+    """LLM-authored narrative explaining the incident and defending trade-offs without duplicating deterministic grounding."""
+
+    executive_summary: str
+    trade_off_comparison: TradeOffComparison
+    grounded_contradiction_analysis: str = Field(
+        ...,
+        description="How specific conflicting signals are resolved in this decision",
+    )
+    remaining_uncertainties: list[str] = Field(default_factory=list)
+    referenced_conflict_ids: list[str] = Field(
+        default_factory=list, description="Optional list of conflict IDs explicitly discussed in narrative"
+    )
+    referenced_evidence_ids: list[str] = Field(
+        default_factory=list, description="Optional list of evidence IDs explicitly discussed in narrative"
+    )
 
 
 class DecisionExplanation(BaseModel):
@@ -314,6 +342,65 @@ class StrategyScore(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Domain Exceptions
+# ---------------------------------------------------------------------------
+
+
+class FaultlineError(Exception):
+    """Base domain exception for Faultline."""
+
+    pass
+
+
+class ModelUnavailableError(FaultlineError):
+    """Raised when both primary and fallback LLM models are unreachable/unavailable."""
+
+    pass
+
+
+class ModelAuthenticationError(FaultlineError):
+    """Raised when upstream LLM authentication fails (401/invalid key)."""
+
+    pass
+
+
+class ModelRequestError(FaultlineError):
+    """Raised when an invalid request (400) was sent to the model provider."""
+
+    pass
+
+
+class InvalidModelOutputError(FaultlineError):
+    """Raised when the LLM outputs schema-invalid or ungrounded data that fails repair."""
+
+    pass
+
+
+class AnalysisTimeoutError(FaultlineError):
+    """Raised when an individual model call or overall investigation analysis times out."""
+
+    pass
+
+
+class InsufficientEvidenceError(FaultlineError):
+    """Raised when evidence collection fails to gather sufficient independent source groups."""
+
+    pass
+
+
+class OrchestratorError(FaultlineError):
+    """Raised when an error occurs during investigation orchestration."""
+
+    pass
+
+
+class ValidationError(FaultlineError):
+    """Raised when an incident report violates safety, provenance, or consistency invariants."""
+
+    pass
+
+
+# ---------------------------------------------------------------------------
 # Policy Validation Configuration Models
 # ---------------------------------------------------------------------------
 
@@ -321,16 +408,30 @@ class StrategyScore(BaseModel):
 class SignalRuleConfig(BaseModel):
     component: ComponentEnum
     dimension: HealthDimension
-    statuses: list[HealthStatus]
+    statuses: list[HealthStatus] = Field(..., min_length=1)
     scope: Optional[str] = None
     relationship: str  # "supports" | "opposes"
     directness: str  # "direct" | "indirect" | "contextual"
+
+    @field_validator("relationship")
+    @classmethod
+    def validate_relationship(cls, v: str) -> str:
+        if v not in ("supports", "opposes"):
+            raise ValueError(f"relationship must be 'supports' or 'opposes', got '{v}'")
+        return v
+
+    @field_validator("directness")
+    @classmethod
+    def validate_directness(cls, v: str) -> str:
+        if v not in ("direct", "indirect", "contextual"):
+            raise ValueError(f"directness must be 'direct', 'indirect', or 'contextual', got '{v}'")
+        return v
 
 
 class CauseConfig(BaseModel):
     name: str
     description: str
-    signal_rules: list[SignalRuleConfig]
+    signal_rules: list[SignalRuleConfig] = Field(..., min_length=1)
 
 
 class StrategyConfig(BaseModel):
@@ -338,13 +439,24 @@ class StrategyConfig(BaseModel):
     name: str
     description: str
     effectiveness_by_cause: dict[str, float]
-    safety: float
-    speed: float
-    affordability: float
+    safety: float = Field(..., ge=0.0, le=100.0)
+    speed: float = Field(..., ge=0.0, le=100.0)
+    affordability: float = Field(..., ge=0.0, le=100.0)
     risk_notes: str
     reversibility: str
     suggested_command: str
     preconditions: list[str] = Field(default_factory=list)
+
+    @field_validator("effectiveness_by_cause")
+    @classmethod
+    def validate_effectiveness(cls, v: dict[str, float]) -> dict[str, float]:
+        allowed = {c.value for c in RootCauseCode}
+        for cause, eff in v.items():
+            if cause not in allowed:
+                raise ValueError(f"Unknown root cause '{cause}' in effectiveness_by_cause")
+            if not (0.0 <= eff <= 100.0):
+                raise ValueError(f"Effectiveness for '{cause}' must be in [0, 100], got {eff}")
+        return v
 
 
 class PolicyConfig(BaseModel):
@@ -359,9 +471,32 @@ class PolicyConfig(BaseModel):
     @field_validator("scoring_weights")
     @classmethod
     def validate_weights_sum(cls, v: dict[str, float]) -> dict[str, float]:
+        required_keys = {"impact", "safety", "speed", "affordability"}
+        if set(v.keys()) != required_keys:
+            raise ValueError(f"scoring_weights must have exactly {required_keys}, got {set(v.keys())}")
+        for k, val in v.items():
+            if not (0.0 <= val <= 1.0):
+                raise ValueError(f"scoring_weight '{k}' must be in [0, 1], got {val}")
         total = sum(v.values())
         if abs(total - 1.0) > 1e-4:
             raise ValueError(f"Scoring weights must sum to 1.0, got {total}")
+        return v
+
+    @field_validator("cause_catalogue")
+    @classmethod
+    def validate_cause_catalogue(cls, v: dict[str, CauseConfig]) -> dict[str, CauseConfig]:
+        allowed = {c.value for c in RootCauseCode}
+        for code in v:
+            if code not in allowed:
+                raise ValueError(f"Unknown root cause code in catalogue: '{code}'")
+        return v
+
+    @field_validator("strategies")
+    @classmethod
+    def validate_strategies(cls, v: dict[str, StrategyConfig]) -> dict[str, StrategyConfig]:
+        for k, strat in v.items():
+            if strat.id != k:
+                raise ValueError(f"Strategy key '{k}' does not match strategy.id '{strat.id}'")
         return v
 
 
@@ -446,3 +581,4 @@ class AnalyzeRequest(BaseModel):
     """Request payload for /api/analyze."""
 
     scenario_id: str = "cache_invalidation_lag"
+

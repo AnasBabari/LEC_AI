@@ -96,6 +96,7 @@ def format_terminal_report(res_dict: dict) -> str:
     lines.append(f"    Status:                    {res_dict['execution']['execution_status'].upper()}")
     lines.append(f"    Operator Approval Req'd:   {res_dict['execution']['operator_approval_required']}")
     lines.append(f"    Suggested Action Command:  {res_dict['execution']['suggested_command']}")
+    lines.append("    Note:                      Illustrative remediation stub — never executed by Faultline.")
     lines.append("=" * 80)
     return "\n".join(lines)
 

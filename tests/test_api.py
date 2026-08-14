@@ -123,3 +123,30 @@ def test_internal_server_error_sanitization() -> None:
         assert "/var/secrets" not in detail
         assert "Internal incident analysis failure" in detail
         assert "Incident reference ID: ERR-" in detail
+
+
+def test_domain_error_http_mappings() -> None:
+    """Verify domain exceptions map to expected HTTP status codes (400, 503, 504)."""
+    from faultline.models import AnalysisTimeoutError, ModelRequestError, ModelUnavailableError
+
+    with TestClient(app) as client:
+        # 1. ModelRequestError -> 400
+        mock_orch = MagicMock()
+        mock_orch.analyze_scenario.side_effect = ModelRequestError("Bad argument sent to model")
+        app.state.orchestrator = mock_orch
+        resp400 = client.post("/api/analyze", json={"scenario_id": "cache_invalidation_lag"})
+        assert resp400.status_code == 400
+        assert "Upstream model request invalid" in resp400.json()["detail"]
+
+        # 2. ModelUnavailableError -> 503
+        mock_orch.analyze_scenario.side_effect = ModelUnavailableError("Both models failed")
+        resp503 = client.post("/api/analyze", json={"scenario_id": "cache_invalidation_lag"})
+        assert resp503.status_code == 503
+        assert "Model provider is currently unavailable" in resp503.json()["detail"]
+
+        # 3. AnalysisTimeoutError -> 504
+        mock_orch.analyze_scenario.side_effect = AnalysisTimeoutError("Request deadline exceeded")
+        resp504 = client.post("/api/analyze", json={"scenario_id": "cache_invalidation_lag"})
+        assert resp504.status_code == 504
+        assert "Analysis timed out" in resp504.json()["detail"]
+

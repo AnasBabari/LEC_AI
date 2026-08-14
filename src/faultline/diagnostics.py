@@ -3,7 +3,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from faultline.models import (
     ComponentEnum,
@@ -14,13 +14,17 @@ from faultline.models import (
     SourceGroup,
 )
 
+ObservationKey = tuple[SourceGroup, str, ComponentEnum, str, datetime, str]
+
 
 class EvidenceLedger:
-    """Per-investigation append-only ledger providing sequential, immutable evidence IDs."""
+    """Per-investigation append-only ledger providing sequential, immutable, deduplicated evidence IDs."""
 
     def __init__(self, incident_at: datetime) -> None:
         self.incident_at = incident_at
         self._observations: list[EvidenceObservation] = []
+        self._seen_observations: set[ObservationKey] = set()
+        self._obs_by_key: dict[ObservationKey, EvidenceObservation] = {}
         self._next_id = 1
 
     def append_observation(
@@ -39,7 +43,11 @@ class EvidenceLedger:
         reliability: ReliabilityLevel,
         details: str,
     ) -> EvidenceObservation:
-        """Append a new observation and assign a sequential, immutable EV-xxx ID."""
+        """Append a new observation or return existing if identical natural observation was already recorded."""
+        key: ObservationKey = (source_group, source, component, signal, observed_at, scope)
+        if key in self._obs_by_key:
+            return self._obs_by_key[key]
+
         evidence_id = f"EV-{self._next_id:03d}"
         self._next_id += 1
 
@@ -64,11 +72,44 @@ class EvidenceLedger:
             details=details,
         )
         self._observations.append(obs)
+        self._seen_observations.add(key)
+        self._obs_by_key[key] = obs
         return obs
 
-    def record_raw(self, observation: EvidenceObservation) -> None:
-        """Record an existing EvidenceObservation directly into the ledger."""
-        self._observations.append(observation)
+    @classmethod
+    def from_validated_snapshot(
+        cls,
+        observations: list[EvidenceObservation],
+        incident_at: datetime,
+    ) -> "EvidenceLedger":
+        """Reconstruct an immutable EvidenceLedger from a strictly validated sequential observation list."""
+        if not observations:
+            raise ValueError("Cannot reconstruct EvidenceLedger from empty observations list.")
+
+        ledger = cls(incident_at=incident_at)
+        for idx, obs in enumerate(observations, start=1):
+            expected_id = f"EV-{idx:03d}"
+            if obs.id != expected_id:
+                raise ValueError(
+                    f"Observation ID '{obs.id}' does not match expected sequential ID '{expected_id}'."
+                )
+            key: ObservationKey = (
+                obs.source_group,
+                obs.source,
+                obs.component,
+                obs.signal,
+                obs.observed_at,
+                obs.scope,
+            )
+            if key in ledger._seen_observations:
+                raise ValueError(f"Duplicate observation content detected in snapshot for ID '{obs.id}'.")
+
+            ledger._seen_observations.add(key)
+            ledger._obs_by_key[key] = obs
+            ledger._observations.append(obs)
+
+        ledger._next_id = len(observations) + 1
+        return ledger
 
     def get_observations(self) -> list[EvidenceObservation]:
         """Return snapshot of all recorded observations."""
@@ -167,18 +208,20 @@ class DiagnosticService:
 
     def query_telemetry(
         self,
-        component: Optional[str] = None,
-        dimension: Optional[str] = None,
+        component: Optional[Union[ComponentEnum, str]] = None,
+        dimension: Optional[Union[HealthDimension, str]] = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Query time-series telemetry metrics across system components."""
         raw_items = self.scenario_data.get("diagnostics", {}).get("telemetry", [])
         new_records = []
+        comp_val = component.value if isinstance(component, ComponentEnum) else component
+        dim_val = dimension.value if isinstance(dimension, HealthDimension) else dimension
 
         for item in raw_items:
-            if component and item["component"] != component:
+            if comp_val and item["component"] != comp_val:
                 continue
-            if dimension and item["dimension"] != dimension:
+            if dim_val and item["dimension"] != dim_val:
                 continue
 
             observed_at = self._resolve_observation_time(item["offset_minutes"])
@@ -208,15 +251,20 @@ class DiagnosticService:
 
     def run_health_probes(
         self,
-        component: Optional[str] = None,
+        component: Optional[Union[ComponentEnum, str]] = None,
+        dimension: Optional[Union[HealthDimension, str]] = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Run synthetic point-in-time health probes and pings."""
         raw_items = self.scenario_data.get("diagnostics", {}).get("health_probe", [])
         new_records = []
+        comp_val = component.value if isinstance(component, ComponentEnum) else component
+        dim_val = dimension.value if isinstance(dimension, HealthDimension) else dimension
 
         for item in raw_items:
-            if component and item["component"] != component:
+            if comp_val and item["component"] != comp_val:
+                continue
+            if dim_val and item["dimension"] != dim_val:
                 continue
 
             observed_at = self._resolve_observation_time(item["offset_minutes"])
@@ -246,15 +294,20 @@ class DiagnosticService:
 
     def fetch_operational_events(
         self,
-        component: Optional[str] = None,
+        component: Optional[Union[ComponentEnum, str]] = None,
+        dimension: Optional[Union[HealthDimension, str]] = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Fetch worker lifecycle heartbeats, queue depths, and operational logs."""
         raw_items = self.scenario_data.get("diagnostics", {}).get("operational_events", [])
         new_records = []
+        comp_val = component.value if isinstance(component, ComponentEnum) else component
+        dim_val = dimension.value if isinstance(dimension, HealthDimension) else dimension
 
         for item in raw_items:
-            if component and item["component"] != component:
+            if comp_val and item["component"] != comp_val:
+                continue
+            if dim_val and item["dimension"] != dim_val:
                 continue
 
             observed_at = self._resolve_observation_time(item["offset_minutes"])
@@ -281,3 +334,4 @@ class DiagnosticService:
             "records": [r.model_dump(mode="json") for r in new_records],
             "summary": f"Retrieved {len(new_records)} operational event records.",
         }
+

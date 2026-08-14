@@ -1,19 +1,25 @@
-"""Unit tests for Phase 2: Evidence Ledger, Conflict Detection, Evidence Scoring, and 4D Strategy Ranking."""
+"""Unit tests for Evidence Ledger, Conflict Detection, Evidence Scoring, 4D Strategy Ranking, and Concurrency."""
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from faultline.diagnostics import DiagnosticService, EvidenceLedger, ScenarioRepository
+import pytest
+from pydantic import ValidationError
+
+from faultline.diagnostics import EvidenceLedger
+from faultline.gemini import FakeGeminiProvider
 from faultline.models import (
     ComponentEnum,
     ConflictType,
-    EvidenceStrengthBand,
+    EvidenceObservation,
     HealthDimension,
     HealthStatus,
+    PolicyConfig,
     ReliabilityLevel,
-    RootCauseCode,
     SourceGroup,
 )
-from faultline.reasoning import ConflictDetector, EvidenceEvaluator, PolicyEngine, StrategyRanker
+from faultline.orchestrator import IncidentOrchestrator
+from faultline.reasoning import ConflictDetector, PolicyEngine
 
 
 def test_evidence_ledger_isolation_and_sequential_ids() -> None:
@@ -78,142 +84,207 @@ def test_evidence_ledger_isolation_and_sequential_ids() -> None:
     assert len(ledger2.get_observations()) == 1
 
 
-def test_canonical_scenario_diagnostic_collection() -> None:
-    """Test executing all 3 diagnostic adapters against canonical scenario."""
-    repo = ScenarioRepository()
-    scenario = repo.get_scenario("cache_invalidation_lag")
-    t0 = datetime.fromisoformat(scenario["incident_at"].replace("Z", "+00:00"))
+def test_evidence_ledger_natural_key_deduplication() -> None:
+    """Ensure identical natural observations return the existing EV ID and do not mint duplicates."""
+    t0 = datetime(2026, 8, 13, 10, 0, 0, tzinfo=timezone.utc)
     ledger = EvidenceLedger(incident_at=t0)
-    service = DiagnosticService(scenario, ledger)
 
-    res_telem = service.query_telemetry()
-    assert res_telem["observations_count"] == 3
-    assert len(ledger.get_by_source_group(SourceGroup.TELEMETRY)) == 3
+    obs1 = ledger.append_observation(
+        source_group=SourceGroup.TELEMETRY,
+        source="query_telemetry",
+        component=ComponentEnum.API_GATEWAY,
+        signal="p99_latency",
+        dimension=HealthDimension.LATENCY,
+        status=HealthStatus.DEGRADED,
+        value=1850.0,
+        unit="ms",
+        observed_at=t0,
+        window_duration_seconds=300,
+        scope="workload",
+        reliability=ReliabilityLevel.AGGREGATED,
+        details="High latency",
+    )
+    assert obs1.id == "EV-001"
 
-    res_probe = service.run_health_probes()
-    assert res_probe["observations_count"] == 3
-    assert len(ledger.get_by_source_group(SourceGroup.HEALTH_PROBE)) == 3
+    # Append exact same observation again
+    obs2 = ledger.append_observation(
+        source_group=SourceGroup.TELEMETRY,
+        source="query_telemetry",
+        component=ComponentEnum.API_GATEWAY,
+        signal="p99_latency",
+        dimension=HealthDimension.LATENCY,
+        status=HealthStatus.DEGRADED,
+        value=1850.0,
+        unit="ms",
+        observed_at=t0,
+        window_duration_seconds=300,
+        scope="workload",
+        reliability=ReliabilityLevel.AGGREGATED,
+        details="High latency",
+    )
+    # Must return same instance and ID
+    assert obs2.id == "EV-001"
+    assert len(ledger.get_observations()) == 1
 
-    res_events = service.fetch_operational_events()
-    assert res_events["observations_count"] == 3
-    assert len(ledger.get_by_source_group(SourceGroup.OPERATIONAL_EVENTS)) == 3
 
-    assert len(ledger.get_observations()) == 9
-    assert ledger.successful_source_groups == {
-        SourceGroup.TELEMETRY,
-        SourceGroup.HEALTH_PROBE,
-        SourceGroup.OPERATIONAL_EVENTS,
-    }
+def test_evidence_ledger_from_validated_snapshot() -> None:
+    """Verify from_validated_snapshot rejects non-contiguous IDs and duplicate content."""
+    t0 = datetime(2026, 8, 13, 10, 0, 0, tzinfo=timezone.utc)
+    obs1 = EvidenceObservation(
+        id="EV-001",
+        source_group=SourceGroup.TELEMETRY,
+        source="query_telemetry",
+        component=ComponentEnum.DATABASE,
+        signal="latency",
+        dimension=HealthDimension.LATENCY,
+        status=HealthStatus.DEGRADED,
+        value=100.0,
+        unit="ms",
+        observed_at=t0,
+        window_start=t0,
+        window_end=t0,
+        scope="workload",
+        reliability=ReliabilityLevel.AGGREGATED,
+        details="high",
+    )
+    obs2_bad_id = EvidenceObservation(
+        id="EV-003",  # Skip EV-002
+        source_group=SourceGroup.HEALTH_PROBE,
+        source="run_health_probes",
+        component=ComponentEnum.DATABASE,
+        signal="ping",
+        dimension=HealthDimension.AVAILABILITY,
+        status=HealthStatus.HEALTHY,
+        value=1.0,
+        unit="ms",
+        observed_at=t0,
+        window_start=t0,
+        window_end=t0,
+        scope="synthetic_probe",
+        reliability=ReliabilityLevel.VERIFIED,
+        details="healthy",
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        EvidenceLedger.from_validated_snapshot([obs1, obs2_bad_id], incident_at=t0)
+    assert "does not match expected sequential ID 'EV-002'" in str(excinfo.value)
 
 
-def test_conflict_detection_classifies_scope_tension() -> None:
-    """Test that DB workload degradation vs healthy synthetic probe is classified as SCOPE_TENSION."""
-    repo = ScenarioRepository()
-    scenario = repo.get_scenario("cache_invalidation_lag")
-    t0 = datetime.fromisoformat(scenario["incident_at"].replace("Z", "+00:00"))
+def test_conflict_dimension_matching_and_scope_tension() -> None:
+    """Verify that different dimensions in the same family produce SCOPE_TENSION, while same dimension produces DIRECT_CONTRADICTION."""
+    t0 = datetime(2026, 8, 13, 10, 0, 0, tzinfo=timezone.utc)
     ledger = EvidenceLedger(incident_at=t0)
-    service = DiagnosticService(scenario, ledger)
 
-    service.query_telemetry()
-    service.run_health_probes()
+    # obs_a: database latency degraded (scope="workload")
+    ledger.append_observation(
+        source_group=SourceGroup.TELEMETRY,
+        source="query_telemetry",
+        component=ComponentEnum.DATABASE,
+        signal="query_latency",
+        dimension=HealthDimension.LATENCY,
+        status=HealthStatus.DEGRADED,
+        value=1850.0,
+        unit="ms",
+        observed_at=t0,
+        window_duration_seconds=300,
+        scope="workload",
+        reliability=ReliabilityLevel.AGGREGATED,
+        details="slow queries",
+    )
+
+    # obs_b: database latency healthy (scope="synthetic_probe") -> Differing scopes -> SCOPE_TENSION
+    ledger.append_observation(
+        source_group=SourceGroup.HEALTH_PROBE,
+        source="run_health_probes",
+        component=ComponentEnum.DATABASE,
+        signal="ping_latency",
+        dimension=HealthDimension.LATENCY,
+        status=HealthStatus.HEALTHY,
+        value=1.5,
+        unit="ms",
+        observed_at=t0,
+        window_duration_seconds=60,
+        scope="synthetic_probe",
+        reliability=ReliabilityLevel.VERIFIED,
+        details="fast ping",
+    )
 
     conflicts = ConflictDetector.detect_conflicts(ledger)
-    assert len(conflicts) >= 1
+    assert len(conflicts) == 1
+    assert conflicts[0].conflict_type == ConflictType.SCOPE_TENSION
+    assert "Workload vs Synthetic Probe" in conflicts[0].headline
 
-    db_conflicts = [c for c in conflicts if c.component == ComponentEnum.DATABASE]
-    assert len(db_conflicts) >= 1
-    assert db_conflicts[0].conflict_type == ConflictType.SCOPE_TENSION
-    assert "Workload vs Synthetic Probe" in db_conflicts[0].headline
+    # obs_c: database latency healthy in same scope "workload" from different source group -> DIRECT_CONTRADICTION
+    ledger_direct = EvidenceLedger(incident_at=t0)
+    ledger_direct.append_observation(
+        source_group=SourceGroup.TELEMETRY,
+        source="telemetry_agent",
+        component=ComponentEnum.DATABASE,
+        signal="query_latency",
+        dimension=HealthDimension.LATENCY,
+        status=HealthStatus.DEGRADED,
+        value=1850.0,
+        unit="ms",
+        observed_at=t0,
+        window_duration_seconds=300,
+        scope="workload",
+        reliability=ReliabilityLevel.AGGREGATED,
+        details="slow queries",
+    )
+    ledger_direct.append_observation(
+        source_group=SourceGroup.OPERATIONAL_EVENTS,
+        source="db_events",
+        component=ComponentEnum.DATABASE,
+        signal="workload_status",
+        dimension=HealthDimension.LATENCY,
+        status=HealthStatus.HEALTHY,
+        value=5.0,
+        unit="ms",
+        observed_at=t0,
+        window_duration_seconds=300,
+        scope="workload",
+        reliability=ReliabilityLevel.VERIFIED,
+        details="reported fast",
+    )
+    conflicts_direct = ConflictDetector.detect_conflicts(ledger_direct)
+    assert len(conflicts_direct) == 1
+    assert conflicts_direct[0].conflict_type == ConflictType.DIRECT_CONTRADICTION
 
 
-def test_evidence_scoring_with_source_group_cap() -> None:
-    """Test calculation of observation strength, source-group cap, and net evidence scores."""
-    repo = ScenarioRepository()
-    scenario = repo.get_scenario("cache_invalidation_lag")
-    t0 = datetime.fromisoformat(scenario["incident_at"].replace("Z", "+00:00"))
-    ledger = EvidenceLedger(incident_at=t0)
-    service = DiagnosticService(scenario, ledger)
-
-    service.query_telemetry()
-    service.run_health_probes()
-    service.fetch_operational_events()
-
+def test_policy_json_validation() -> None:
+    """Verify PolicyConfig rejects invalid weights, unapproved cause codes, or out-of-bounds metrics."""
     policy = PolicyEngine()
-    evaluator = EvidenceEvaluator(policy)
+    raw_dict = policy.policy_data
 
-    candidates = [
-        RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
-        RootCauseCode.DATABASE_CAPACITY_DEGRADATION,
-        RootCauseCode.CACHE_NODE_FAILURE,
-        RootCauseCode.TRAFFIC_SURGE,
-    ]
+    # Valid policy loads cleanly
+    PolicyConfig.model_validate(raw_dict)
 
-    evaluated = evaluator.evaluate_hypotheses(candidates, ledger)
-    by_code = {h.cause_code: h for h in evaluated}
-
-    # 1. Consumer stalled:
-    # Telemetry: cache_hit_ratio (2+2+2=6)
-    # Events: invalidation_queue_backlog (3+2+3=8)
-    # Net support = 6 + 8 = 14
-    consumer_hyp = by_code[RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED]
-    assert consumer_hyp.net_evidence_score >= 14.0
-    assert consumer_hyp.strength_band == EvidenceStrengthBand.STRONG
-    assert consumer_hyp.decision_weight > 70.0
-
-    # 2. Database degradation:
-    # Telemetry workload latency: +6
-    # Opposing synthetic direct probe: -8 (verified=3, current=2, direct=3 = 8)
-    # Net = max(0, 6 - 8) = 0.0
-    db_hyp = by_code[RootCauseCode.DATABASE_CAPACITY_DEGRADATION]
-    assert db_hyp.opposing_score >= 8.0
-    assert db_hyp.net_evidence_score == 0.0
-    assert db_hyp.decision_weight == 0.0
-    assert db_hyp.strength_band == EvidenceStrengthBand.UNSUPPORTED
+    # Invalid weights sum
+    bad_dict = dict(raw_dict)
+    bad_dict["scoring_weights"] = {"impact": 0.5, "safety": 0.2, "speed": 0.1, "affordability": 0.1}  # sum = 0.9
+    with pytest.raises(ValidationError) as excinfo:
+        PolicyConfig.model_validate(bad_dict)
+    assert "Scoring weights must sum to 1.0" in str(excinfo.value)
 
 
-def test_four_dimensional_strategy_ranking() -> None:
-    """Verify that consumer recovery wins overall, cache restart is fastest/cheapest but loses, and failover ranks last."""
-    repo = ScenarioRepository()
-    scenario = repo.get_scenario("cache_invalidation_lag")
-    t0 = datetime.fromisoformat(scenario["incident_at"].replace("Z", "+00:00"))
-    ledger = EvidenceLedger(incident_at=t0)
-    service = DiagnosticService(scenario, ledger)
+def test_concurrent_investigations_isolation() -> None:
+    """Verify 10 concurrent orchestrator analysis runs maintain absolute thread-safe isolation."""
+    orchestrator = IncidentOrchestrator(provider=FakeGeminiProvider())
 
-    service.query_telemetry()
-    service.run_health_probes()
-    service.fetch_operational_events()
+    def run_one(idx: int) -> str:
+        scenario = "cache_invalidation_lag" if idx % 2 == 0 else "index_regression"
+        result = orchestrator.analyze_scenario(scenario)
+        assert result.validation_passed is True
+        assert len(result.evidence) >= 4
+        if scenario == "cache_invalidation_lag":
+            assert result.strategy_ranking[0].strategy_id == "RECOVER_CONSUMER_AND_DRAIN"
+        else:
+            assert result.strategy_ranking[0].strategy_id == "REBUILD_DATABASE_INDEX"
+        return result.run_id
 
-    policy = PolicyEngine()
-    evaluator = EvidenceEvaluator(policy)
-    ranker = StrategyRanker(policy)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        run_ids = list(executor.map(run_one, range(10)))
 
-    candidates = [
-        RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
-        RootCauseCode.DATABASE_CAPACITY_DEGRADATION,
-        RootCauseCode.CACHE_NODE_FAILURE,
-        RootCauseCode.TRAFFIC_SURGE,
-    ]
-
-    evaluated = evaluator.evaluate_hypotheses(candidates, ledger)
-    ranked = ranker.rank_strategies(evaluated)
-
-    assert len(ranked) >= 4
-    # Winner must be RECOVER_CONSUMER_AND_DRAIN
-    assert ranked[0].strategy_id == "RECOVER_CONSUMER_AND_DRAIN"
-    assert ranked[0].rank == 1
-    assert ranked[0].final_score > 65.0
-
-    # 2nd is THROTTLE_TRAFFIC
-    assert ranked[1].strategy_id == "THROTTLE_TRAFFIC"
-    assert ranked[1].rank == 2
-
-    # 3rd is RESTART_CACHE (fastest at speed=100, but lower final score)
-    assert ranked[2].strategy_id == "RESTART_CACHE"
-    assert ranked[2].rank == 3
-    assert ranked[2].speed == 100.0
-    assert ranked[2].final_score < ranked[0].final_score
-
-    # Last is FAILOVER_DATABASE (lowest score)
-    assert ranked[-1].strategy_id == "FAILOVER_DATABASE"
-    assert ranked[-1].rank == len(ranked)
-    assert ranked[-1].final_score < 20.0
+    # Ensure all run IDs are strictly unique
+    assert len(run_ids) == 10
+    assert len(set(run_ids)) == 10

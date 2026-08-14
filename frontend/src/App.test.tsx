@@ -197,7 +197,7 @@ describe('Faultline App Component', () => {
   it('renders initial dashboard header and scenario selector', async () => {
     render(<App />);
 
-    expect(screen.getByText(/FAULTLINE/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Faultline/i })).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getAllByText(/Cache Invalidation Lag/i).length).toBeGreaterThan(0);
     });

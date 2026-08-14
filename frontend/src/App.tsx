@@ -3,6 +3,8 @@ import {
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Cpu,
   Database,
   Eye,
@@ -20,7 +22,6 @@ import type {
   ComponentEnum,
   HealthResponse,
   HealthStatus,
-  InvestigationTraceItem,
   ScenarioMetadata,
 } from './types';
 
@@ -35,6 +36,9 @@ export const App: React.FC = () => {
   // Replay timeline state
   const [replayIndex, setReplayIndex] = useState<number>(0);
   const [isReplaying, setIsReplaying] = useState<boolean>(false);
+
+  // Expanded evidence breakdowns per hypothesis
+  const [expandedBreakdowns, setExpandedBreakdowns] = useState<Record<string, boolean>>({});
 
   // Filters
   const [componentFilter, setComponentFilter] = useState<string>('all');
@@ -55,20 +59,21 @@ export const App: React.FC = () => {
 
   const handleScenarioChange = (newId: string) => {
     setSelectedScenarioId(newId);
-    setResult(null); // Clear stale results on scenario switch (M9)
+    setResult(null); // Clear stale results on scenario switch
     setError(null);
   };
 
   const handleRunInvestigation = async () => {
     setLoading(true);
     setError(null);
-    setResult(null); // Clear previous result during run
+    setResult(null);
     try {
       const data = await analyzeScenario(selectedScenarioId);
       setResult(data);
       setReplayIndex(data.investigation_trace.length); // Show full timeline by default
-    } catch (err: any) {
-      setError(err.message || 'Investigation failed');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Investigation failed';
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -78,6 +83,13 @@ export const App: React.FC = () => {
     if (!result) return;
     setReplayIndex(1);
     setIsReplaying(true);
+  };
+
+  const toggleBreakdown = (causeCode: string) => {
+    setExpandedBreakdowns((prev) => ({
+      ...prev,
+      [causeCode]: !prev[causeCode],
+    }));
   };
 
   useEffect(() => {
@@ -181,72 +193,82 @@ export const App: React.FC = () => {
             </>
           ) : (
             <>
-              <Play size={16} /> Run Investigation
+              <Play size={14} /> Run Investigation
             </>
           )}
         </button>
 
         {result && (
           <button
-            className="btn-primary"
-            style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+            className="btn-secondary"
             onClick={handleStartReplay}
             disabled={isReplaying}
           >
-            <RotateCcw size={14} /> Replay Timeline
+            <RotateCcw size={14} /> Replay Investigation
           </button>
         )}
       </div>
 
+      {/* Error Banner */}
       {error && (
-        <div className="card" style={{ borderColor: 'var(--status-failed)' }}>
-          <div style={{ color: 'var(--status-failed)', fontWeight: 600 }}>Error: {error}</div>
+        <div className="error-banner">
+          <AlertTriangle size={18} /> {error}
         </div>
       )}
 
-      {/* Initial Incident Alert Banner */}
-      <div className="alert-banner">
-        <div className="alert-main">
-          <AlertTriangle className="alert-icon" size={24} />
-          <div>
-            <div className="alert-headline">
-              {result ? result.incident.headline : (selectedScenario?.title || 'Active Operational Fault')}
+      {/* Scenario Context Card */}
+      {selectedScenario && (
+        <div className="card" style={{ marginBottom: '16px' }}>
+          <div className="card-header">
+            <div className="card-title">
+              <Layers size={16} /> Scenario Context: {selectedScenario.title}
             </div>
-            <div className="alert-details">
-              {result ? result.incident.details : selectedScenario?.description || 'Awaiting investigation trigger.'}
+            <div style={{ display: 'flex', gap: '4px' }}>
+              {selectedScenario.affected_components.map((c) => (
+                <span key={c} className="badge badge-neutral">
+                  {c}
+                </span>
+              ))}
             </div>
           </div>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: 0 }}>
+            {selectedScenario.description}
+          </p>
         </div>
-        <div className="badge badge-failed">CRITICAL ALERT</div>
-      </div>
+      )}
 
+      {/* Active Investigation Results */}
       {result && (
         <>
-          {/* Timeline & Replay Card */}
+          {/* Metadata & Timeline Bar */}
           <div className="card">
             <div className="card-header">
               <div className="card-title">
-                <Layers size={16} /> Investigation Timeline ({replayIndex} of {result.investigation_trace.length} steps)
+                <Cpu size={16} /> Investigation Trace ({result.investigation_trace.length} Steps)
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <div className="badge badge-neutral">Run ID: {result.run_id}</div>
-                <div className="badge badge-neutral">Model: {result.model_execution.model_used}</div>
+                <span className="badge badge-healthy">Validated: Passed</span>
+                <span className="badge badge-neutral">Run ID: {result.run_id}</span>
               </div>
             </div>
-            <div className="timeline-list">
-              {result.investigation_trace.slice(0, replayIndex).map((item: InvestigationTraceItem, idx: number) => (
-                <div key={idx} className="timeline-item">
-                  <div className="timeline-index">R{item.round_index}</div>
-                  <div className="timeline-content">
-                    <div className="timeline-summary">{item.summary}</div>
-                    <div className="timeline-time">{new Date(item.timestamp).toLocaleTimeString()}</div>
+
+            {/* Step-by-Step Replay Timeline */}
+            <div className="timeline-container">
+              {result.investigation_trace.slice(0, replayIndex).map((item, idx) => (
+                <div key={idx} className="timeline-step">
+                  <div className="timeline-header">
+                    <span className="timeline-round">Round {item.round_index}</span>
+                    <span className="timeline-type">{item.action_type}</span>
+                    <span className="timeline-time">
+                      {new Date(item.timestamp).toLocaleTimeString()}
+                    </span>
                   </div>
+                  <div className="timeline-summary">{item.summary}</div>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* Grid: Evidence Ledger & Detected Conflicts */}
           <div className="grid-2">
             {/* Evidence Ledger */}
             <div className="card">
@@ -358,46 +380,93 @@ export const App: React.FC = () => {
             </div>
 
             <div className="grid-2" style={{ marginBottom: 0 }}>
-              {result.hypotheses.map((hyp) => (
-                <div key={hyp.cause_code} className="hypothesis-card">
-                  <div className="hypothesis-header">
-                    <div>
-                      <div className="hypothesis-title">{hyp.name}</div>
-                      <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                        {hyp.cause_code}
+              {result.hypotheses.map((hyp) => {
+                const isExpanded = !!expandedBreakdowns[hyp.cause_code];
+                return (
+                  <div key={hyp.cause_code} className="hypothesis-card">
+                    <div className="hypothesis-header">
+                      <div>
+                        <div className="hypothesis-title">{hyp.name}</div>
+                        <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                          {hyp.cause_code}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        <div className="badge badge-primary" style={{ fontSize: '13px' }}>
+                          Weight: {hyp.decision_weight}%
+                        </div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                          Net Evidence: {hyp.net_evidence_score}
+                        </div>
                       </div>
                     </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div className="badge badge-primary" style={{ fontSize: '13px' }}>
-                        Weight: {hyp.decision_weight}%
+
+                    <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '8px 0' }}>{hyp.summary}</p>
+
+                    <div className="causal-chain">
+                      <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-primary)' }}>
+                        Causal Chain:
                       </div>
-                      <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                        Net Evidence: {hyp.net_evidence_score}
-                      </div>
+                      {hyp.causal_chain.map((step, sIdx) => (
+                        <div key={sIdx} className="causal-step">
+                          <ArrowRight size={12} color="var(--primary)" /> {step}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
+                      <strong>Supporting Evidence:</strong>{' '}
+                      {hyp.supporting_observations.map((s) => s.evidence_id).join(', ') || 'None'} |{' '}
+                      <strong>Opposing:</strong>{' '}
+                      {hyp.opposing_observations.map((o) => o.evidence_id).join(', ') || 'None'}
+                    </div>
+
+                    {/* Expandable Evidence Score Breakdown */}
+                    <div style={{ marginTop: '10px' }}>
+                      <button
+                        className="btn-secondary"
+                        style={{ padding: '4px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                        onClick={() => toggleBreakdown(hyp.cause_code)}
+                      >
+                        {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        {isExpanded ? 'Hide Score Calculation' : 'Challenge / Inspect Score Breakdown'}
+                      </button>
+
+                      {isExpanded && (
+                        <div style={{ marginTop: '8px', padding: '8px', background: 'rgba(0,0,0,0.2)', borderRadius: '4px', fontSize: '11px' }}>
+                          <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-primary)' }}>
+                            Supporting Contributions (R + F + D = Strength):
+                          </div>
+                          {hyp.supporting_observations.length === 0 ? (
+                            <div style={{ color: 'var(--text-muted)' }}>None</div>
+                          ) : (
+                            hyp.supporting_observations.map((s) => (
+                              <div key={s.evidence_id} style={{ fontFamily: 'var(--font-mono)', margin: '2px 0' }}>
+                                [{s.evidence_id}] {s.source_group} ({s.component}): R:{s.reliability_score} + F:{s.freshness_score} + D:{s.directness_score} = {s.total_strength} pts
+                                {s.excluded_by_source_cap ? ' (Capped / Excluded by Source Group Max)' : ' [Dominant in Group]'}
+                              </div>
+                            ))
+                          )}
+
+                          {hyp.opposing_observations.length > 0 && (
+                            <>
+                              <div style={{ fontWeight: 600, marginTop: '6px', marginBottom: '4px', color: 'var(--text-primary)' }}>
+                                Opposing Deductions:
+                              </div>
+                              {hyp.opposing_observations.map((o) => (
+                                <div key={o.evidence_id} style={{ fontFamily: 'var(--font-mono)', margin: '2px 0' }}>
+                                  [{o.evidence_id}] {o.source_group} ({o.component}): -{o.total_strength} pts
+                                  {o.excluded_by_source_cap ? ' (Capped)' : ''}
+                                </div>
+                              ))}
+                            </>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
-
-                  <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '8px 0' }}>{hyp.summary}</p>
-
-                  <div className="causal-chain">
-                    <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-primary)' }}>
-                      Causal Chain:
-                    </div>
-                    {hyp.causal_chain.map((step, sIdx) => (
-                      <div key={sIdx} className="causal-step">
-                        <ArrowRight size={12} color="var(--primary)" /> {step}
-                      </div>
-                    ))}
-                  </div>
-
-                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
-                    <strong>Supporting Evidence:</strong>{' '}
-                    {hyp.supporting_observations.map((s) => s.evidence_id).join(', ') || 'None'} |{' '}
-                    <strong>Opposing:</strong>{' '}
-                    {hyp.opposing_observations.map((o) => o.evidence_id).join(', ') || 'None'}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 
@@ -501,6 +570,9 @@ export const App: React.FC = () => {
         </div>
         <div style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
           <div><strong>Suggested Action:</strong> {result?.execution.suggested_command || 'None'}</div>
+          <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+            <em>Illustrative remediation stub — never executed by Faultline.</em>
+          </div>
           {result?.execution.safety_preconditions && result.execution.safety_preconditions.length > 0 && (
             <div style={{ marginTop: '4px', fontSize: '11px' }}>
               <strong>Preconditions:</strong> {result.execution.safety_preconditions.join('; ')}

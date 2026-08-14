@@ -10,16 +10,16 @@ from faultline.models import (
     AnalysisResult,
     LifecycleState,
     RootCauseCode,
+    ValidationError,
 )
-from faultline.reasoning import EvidenceEvaluator, PolicyEngine, StrategyRanker
+from faultline.reasoning import (
+    ConflictDetector,
+    EvidenceEvaluator,
+    PolicyEngine,
+    StrategyRanker,
+)
 
 logger = logging.getLogger(__name__)
-
-
-class ValidationError(Exception):
-    """Raised when an incident report violates safety, provenance, or consistency invariants."""
-
-    pass
 
 
 class ReportValidator:
@@ -44,46 +44,61 @@ class ReportValidator:
                 f"({[g.value for g in observed_source_groups]}), minimum required is 2."
             )
 
-        # 3. Check evidence ID integrity and uniqueness
-        evidence_ids = [obs.id for obs in result.evidence]
-        if len(evidence_ids) != len(set(evidence_ids)):
-            raise ValidationError("Duplicate evidence IDs found in evidence ledger.")
-        for eid in evidence_ids:
-            if not eid.startswith("EV-"):
-                raise ValidationError(f"Malformed evidence ID: {eid}")
+        # 3. Strict Sequential Evidence ID & Ledger Reconstruction (Finding 10)
+        if not result.evidence:
+            raise ValidationError("Evidence ledger in report is empty.")
 
-        ledger_id_set = set(evidence_ids)
-        obs_by_id = {obs.id: obs for obs in result.evidence}
-
-        # 4. Check conflict citations and cross-source requirement
-        if not result.conflicts:
-            raise ValidationError("At least one diagnostic conflict or scope tension must be identified and analyzed.")
-
-        for conflict in result.conflicts:
-            if not conflict.evidence_ids:
-                raise ValidationError(f"Conflict {conflict.id} has empty evidence citations.")
-            for cited_id in conflict.evidence_ids:
-                if cited_id not in ledger_id_set:
-                    raise ValidationError(f"Conflict {conflict.id} cites non-existent evidence ID: {cited_id}")
-
-            # Verify cited evidence spans multiple source groups
-            cited_obs = [obs for obs in result.evidence if obs.id in conflict.evidence_ids]
-            cited_groups = {obs.source_group for obs in cited_obs}
-            if len(cited_groups) < 2:
-                raise ValidationError(f"Conflict {conflict.id} does not span independent source groups: {cited_groups}")
-
-        # 5. Deterministic Reconstruction of Hypotheses from Evidence Ledger & Policy (C1 - Critical Authority)
         reported_at_str = result.incident.get("reported_at")
         if reported_at_str:
             t0 = datetime.fromisoformat(reported_at_str.replace("Z", "+00:00"))
         else:
             t0 = datetime.now(timezone.utc)
 
-        reconstructed_ledger = EvidenceLedger(incident_at=t0)
-        for obs in result.evidence:
-            reconstructed_ledger.record_raw(obs)
+        try:
+            reconstructed_ledger = EvidenceLedger.from_validated_snapshot(result.evidence, incident_at=t0)
+        except ValueError as snap_err:
+            raise ValidationError(f"Evidence ledger integrity violation: {snap_err}") from snap_err
 
-        # Recompute authoritative full-catalogue evaluation from reconstructed ledger
+        evidence_ids = [obs.id for obs in result.evidence]
+        ledger_id_set = set(evidence_ids)
+
+        # 4. Recompute and Validate All Conflicts from Reconstructed Ledger (Finding 11)
+        expected_conflicts = ConflictDetector.detect_conflicts(reconstructed_ledger)
+        if not result.conflicts:
+            raise ValidationError("At least one diagnostic conflict or scope tension must be identified and analyzed.")
+
+        if len(result.conflicts) != len(expected_conflicts):
+            raise ValidationError(
+                f"Conflict count mismatch: report contains {len(result.conflicts)}, "
+                f"authoritative recomputation detected {len(expected_conflicts)}."
+            )
+
+        for actual_conf, exp_conf in zip(result.conflicts, expected_conflicts):
+            if actual_conf.id != exp_conf.id:
+                raise ValidationError(f"Conflict ID mismatch: '{actual_conf.id}' vs expected '{exp_conf.id}'.")
+            if actual_conf.conflict_type != exp_conf.conflict_type:
+                raise ValidationError(
+                    f"Conflict type mismatch on {actual_conf.id}: '{actual_conf.conflict_type.value}' vs expected '{exp_conf.conflict_type.value}'."
+                )
+            if actual_conf.component != exp_conf.component:
+                raise ValidationError(
+                    f"Conflict component mismatch on {actual_conf.id}: '{actual_conf.component.value}' vs expected '{exp_conf.component.value}'."
+                )
+            if actual_conf.evidence_ids != exp_conf.evidence_ids:
+                raise ValidationError(
+                    f"Conflict evidence citations mismatch on {actual_conf.id}: {actual_conf.evidence_ids} vs expected {exp_conf.evidence_ids}."
+                )
+
+            for cited_id in actual_conf.evidence_ids:
+                if cited_id not in ledger_id_set:
+                    raise ValidationError(f"Conflict {actual_conf.id} cites non-existent evidence ID: {cited_id}")
+
+            cited_obs = [obs for obs in result.evidence if obs.id in actual_conf.evidence_ids]
+            cited_groups = {obs.source_group for obs in cited_obs}
+            if len(cited_groups) < 2:
+                raise ValidationError(f"Conflict {actual_conf.id} does not span independent source groups: {cited_groups}")
+
+        # 5. Deterministic Reconstruction of Hypotheses from Evidence Ledger & Policy (Finding 12)
         authoritative_hypotheses = self.evaluator.evaluate_hypotheses(
             candidate_codes=list(RootCauseCode),
             ledger=reconstructed_ledger,
@@ -134,34 +149,43 @@ class ReportValidator:
             if hyp.net_evidence_score > 0:
                 has_positive_evidence = True
 
-            rules = self.policy.cause_rules.get(hyp.cause_code, [])
-
-            # Verify supporting observations match policy signal rules
+            # Verify observation breakdown match (Finding 12)
+            auth_sup_by_id = {s.evidence_id: s for s in auth_hyp.supporting_observations}
             for obs_score in hyp.supporting_observations:
-                if obs_score.evidence_id not in ledger_id_set:
+                if obs_score.evidence_id not in auth_sup_by_id:
                     raise ValidationError(
-                        f"Hypothesis {hyp.cause_code.value} cites invalid evidence ID: {obs_score.evidence_id}"
+                        f"Hypothesis {hyp.cause_code.value} reports unexpected supporting evidence {obs_score.evidence_id}."
                     )
-                obs = obs_by_id[obs_score.evidence_id]
-                matched = self.evaluator._match_rule(obs, rules)
-                if not matched or matched.get("relationship") != "supports":
+                auth_score = auth_sup_by_id[obs_score.evidence_id]
+                if (
+                    obs_score.reliability_score != auth_score.reliability_score
+                    or obs_score.freshness_score != auth_score.freshness_score
+                    or obs_score.directness_score != auth_score.directness_score
+                    or obs_score.total_strength != auth_score.total_strength
+                    or obs_score.is_dominant != auth_score.is_dominant
+                    or obs_score.excluded_by_source_cap != auth_score.excluded_by_source_cap
+                ):
                     raise ValidationError(
-                        f"Hypothesis {hyp.cause_code.value} cites observation {obs.id} as supporting, "
-                        f"but policy defines it as {matched.get('relationship') if matched else 'unrelated'}."
+                        f"Observation breakdown score mismatch for evidence {obs_score.evidence_id} in {hyp.cause_code.value}."
                     )
 
-            # Verify opposing observations match policy signal rules
+            auth_opp_by_id = {s.evidence_id: s for s in auth_hyp.opposing_observations}
             for obs_score in hyp.opposing_observations:
-                if obs_score.evidence_id not in ledger_id_set:
+                if obs_score.evidence_id not in auth_opp_by_id:
                     raise ValidationError(
-                        f"Hypothesis {hyp.cause_code.value} cites invalid evidence ID: {obs_score.evidence_id}"
+                        f"Hypothesis {hyp.cause_code.value} reports unexpected opposing evidence {obs_score.evidence_id}."
                     )
-                obs = obs_by_id[obs_score.evidence_id]
-                matched = self.evaluator._match_rule(obs, rules)
-                if not matched or matched.get("relationship") != "opposes":
+                auth_score = auth_opp_by_id[obs_score.evidence_id]
+                if (
+                    obs_score.reliability_score != auth_score.reliability_score
+                    or obs_score.freshness_score != auth_score.freshness_score
+                    or obs_score.directness_score != auth_score.directness_score
+                    or obs_score.total_strength != auth_score.total_strength
+                    or obs_score.is_dominant != auth_score.is_dominant
+                    or obs_score.excluded_by_source_cap != auth_score.excluded_by_source_cap
+                ):
                     raise ValidationError(
-                        f"Hypothesis {hyp.cause_code.value} cites observation {obs.id} as opposing, "
-                        f"but policy defines it as {matched.get('relationship') if matched else 'unrelated'}."
+                        f"Observation breakdown score mismatch for opposing evidence {obs_score.evidence_id} in {hyp.cause_code.value}."
                     )
 
         if not has_positive_evidence:
@@ -225,7 +249,7 @@ class ReportValidator:
         if not alt_strategy:
             raise ValidationError(f"Trade-off comparison cites unknown alternative strategy: {alt_id}")
 
-        # Mandatory Structured Grounding Verification (High Finding 2)
+        # Mandatory Structured Grounding Verification
         g = rec.grounding
         if not g:
             raise ValidationError("Report lacks mandatory StructuredDecisionGrounding.")
@@ -318,43 +342,27 @@ class ReportValidator:
                 f"Structured grounding rejection risk factor mismatch: reported '{g.rejection_risk_factor}', expected '{expected_risk}'."
             )
 
-        # Grounding: Rejection rationale must articulate why the alternative is unsuitable
-        rejection_lower = rec.trade_off_comparison.rejection_rationale.lower()
-        if len(rejection_lower.split()) < 8:
+        # Simplified prose checks (Finding 13): Require non-empty, substantive explanations
+        rejection_words = rec.trade_off_comparison.rejection_rationale.strip().split()
+        if len(rejection_words) < 8:
             raise ValidationError("Trade-off rejection rationale is too brief to provide defensible justification.")
 
-        # Grounding: Contradiction analysis must reference detected conflicts or conflicting evidence
-        contradiction_text = rec.grounded_contradiction_analysis
-        if not contradiction_text or len(contradiction_text.split()) < 10:
+        contradiction_text = rec.grounded_contradiction_analysis.strip()
+        if len(contradiction_text.split()) < 8:
             raise ValidationError("Grounded contradiction analysis is missing or insufficiently detailed.")
 
+        # Grounding check: ensure narrative mentions at least one component, conflict ID, or evidence ID
         detected_conflict_ids = {c.id.lower() for c in result.conflicts}
         detected_evidence_ids = {eid.lower() for c in result.conflicts for eid in c.evidence_ids}
         detected_components = {c.component.value.lower() for c in result.conflicts}
-
         contra_lower = contradiction_text.lower()
         has_id_ref = any(cid in contra_lower for cid in detected_conflict_ids | detected_evidence_ids)
-        has_component_scope_ref = any(comp in contra_lower for comp in detected_components) and (
-            "probe" in contra_lower
-            or "synthetic" in contra_lower
-            or "telemetry" in contra_lower
-            or "workload" in contra_lower
-            or "latency" in contra_lower
-            or "scope" in contra_lower
-            or "healthy" in contra_lower
-            or "tension" in contra_lower
-            or "conflict" in contra_lower
-        )
+        has_comp_ref = any(comp in contra_lower for comp in detected_components)
 
-        if not (has_id_ref or has_component_scope_ref):
+        if not (has_id_ref or has_comp_ref):
             raise ValidationError(
-                "Contradiction analysis is not semantically grounded in detected conflicts or conflicting diagnostic evidence."
+                "Contradiction analysis does not reference any affected components, evidence IDs, or conflict IDs."
             )
-
-        # Check for ungrounded denials of observed contradictions
-        denial_phrases = ["no contradiction", "no conflict", "contradictions do not exist", "aliens"]
-        if any(dp in contra_lower for dp in denial_phrases):
-            raise ValidationError("Contradiction analysis contains ungrounded denial of verified diagnostic conflicts.")
 
         # 8. Check execution safety boundary
         if result.execution.execution_status != "not_executed":

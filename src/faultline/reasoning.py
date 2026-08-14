@@ -128,23 +128,50 @@ class ConflictDetector:
 
         # If overlapping and differing measurement scopes: Scope Tension
         if obs_a.scope != obs_b.scope:
+            scopes = {obs_a.scope, obs_b.scope}
+            if "synthetic_probe" in scopes and "workload" in scopes:
+                headline = f"Scope Tension on {obs_a.component.value}: Workload vs Synthetic Probe"
+                op_implication = (
+                    "Both observations are accurate within their measurement scopes: the component responds normally to direct synthetic probes, "
+                    "but experiences degradation under actual production workload due to upstream or downstream dependencies."
+                )
+            else:
+                headline = f"Scope Tension on {obs_a.component.value}: '{obs_a.scope}' vs '{obs_b.scope}'"
+                op_implication = (
+                    f"Both observations reflect valid measurements under different operational scopes ('{obs_a.scope}' vs '{obs_b.scope}')."
+                )
+
             return Conflict(
                 id=conflict_id,
                 conflict_type=ConflictType.SCOPE_TENSION,
                 component=obs_a.component,
                 evidence_ids=[obs_a.id, obs_b.id],
-                headline=f"Scope Tension on {obs_a.component.value}: Workload vs Synthetic Probe",
+                headline=headline,
                 description=(
                     f"Source '{obs_a.source}' ({obs_a.scope}) reports {obs_a.status.value} ({obs_a.signal}={obs_a.value}{obs_a.unit}), "
                     f"while source '{obs_b.source}' ({obs_b.scope}) reports {obs_b.status.value} ({obs_b.signal}={obs_b.value}{obs_b.unit})."
                 ),
+                operational_implication=op_implication,
+            )
+
+        # Same scope, overlapping window: check exact dimension equality for direct contradiction
+        if obs_a.dimension != obs_b.dimension:
+            return Conflict(
+                id=conflict_id,
+                conflict_type=ConflictType.SCOPE_TENSION,
+                component=obs_a.component,
+                evidence_ids=[obs_a.id, obs_b.id],
+                headline=f"Measurement Dimension Tension on {obs_a.component.value}: {obs_a.dimension.value} vs {obs_b.dimension.value}",
+                description=(
+                    f"Source '{obs_a.source}' reports {obs_a.status.value} on {obs_a.dimension.value} ({obs_a.signal}={obs_a.value}{obs_a.unit}), "
+                    f"while source '{obs_b.source}' reports {obs_b.status.value} on {obs_b.dimension.value} ({obs_b.signal}={obs_b.value}{obs_b.unit}) in scope '{obs_a.scope}'."
+                ),
                 operational_implication=(
-                    "Both observations are accurate within their measurement scopes: the component responds normally to direct synthetic probes, "
-                    "but experiences degradation under actual production workload due to upstream or downstream dependencies."
+                    f"Discrepancy reflects distinct measured health dimensions ({obs_a.dimension.value} vs {obs_b.dimension.value}) within the same component."
                 ),
             )
 
-        # Direct contradiction: same scope, overlapping window, opposing status
+        # Direct contradiction: same scope, same dimension, overlapping window, opposing status
         return Conflict(
             id=conflict_id,
             conflict_type=ConflictType.DIRECT_CONTRADICTION,

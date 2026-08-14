@@ -8,21 +8,25 @@ from typing import Any, Optional, Protocol, Type, TypeVar, cast
 from pydantic import BaseModel, ValidationError
 
 from faultline.models import (
-    AdvantageDimension,
+    AnalysisTimeoutError,
     Conflict,
-    DecisionExplanation,
+    DecisionNarrativeDraft,
     DiagnosticActionBatch,
     DiagnosticToolCall,
+    DiagnosticToolName,
     EvaluatedHypothesis,
     EvidenceObservation,
     FaultReport,
     HypothesisDraft,
     HypothesisDraftSet,
+    InvalidModelOutputError,
+    ModelAuthenticationError,
     ModelCallTrace,
     ModelExecutionMetadata,
+    ModelRequestError,
+    ModelUnavailableError,
     RootCauseCode,
     StrategyScore,
-    StructuredDecisionGrounding,
     TradeOffComparison,
 )
 
@@ -31,25 +35,64 @@ logger = logging.getLogger("faultline.gemini")
 T = TypeVar("T", bound=BaseModel)
 
 
+def classify_model_error(err: Exception) -> tuple[bool, str]:
+    """Classify an upstream model error based on structured status codes / exception types.
+
+    Returns (is_fallback_eligible: bool, sanitized_category: str).
+    """
+    err_type = type(err).__name__
+
+    # 1. Check Google GenAI APIError with HTTP status code
+    try:
+        from google.genai import errors
+
+        if isinstance(err, errors.APIError):
+            code = getattr(err, "code", None)
+            if code == 400:
+                return (False, f"bad_request_{code} ({err_type})")
+            if code == 401:
+                return (False, f"authentication_failed_{code} ({err_type})")
+            if code == 403:
+                return (False, f"permission_denied_{code} ({err_type})")
+            if code == 404:
+                return (True, f"model_not_found_{code} ({err_type})")
+            if code == 429:
+                return (True, f"rate_limit_exceeded_{code} ({err_type})")
+            if code in (500, 502, 503, 504):
+                return (True, f"service_unavailable_{code} ({err_type})")
+            return (False, f"api_error_{code} ({err_type})")
+    except ImportError:
+        pass
+
+    # 2. Check timeouts and connection errors
+    err_str = str(err).lower()
+    if isinstance(err, TimeoutError) or "timeout" in err_str or "timed out" in err_str:
+        return (True, f"request_timeout ({err_type})")
+    if "connect" in err_str or "connection" in err_str:
+        return (True, f"connection_error ({err_type})")
+
+    # 3. Handle string fallback for non-APIError exceptions with explicit HTTP codes
+    if "429" in err_str or "quota" in err_str or "resource_exhausted" in err_str:
+        return (True, f"rate_limit_exceeded ({err_type})")
+    if "503" in err_str or "502" in err_str or "504" in err_str or "unavailable" in err_str:
+        return (True, f"service_unavailable ({err_type})")
+    if "404" in err_str or "not found" in err_str:
+        return (True, f"model_not_found ({err_type})")
+    if "401" in err_str or "unauthenticated" in err_str:
+        return (False, f"authentication_failed ({err_type})")
+    if "400" in err_str or "invalid argument" in err_str:
+        return (False, f"bad_request ({err_type})")
+
+    return (False, f"unhandled_error ({err_type})")
+
+
 def sanitize_error_category(err: Exception) -> str:
     """Classify an upstream model error into a safe, non-leaking category without exposing private tokens or paths."""
-    err_type = type(err).__name__
-    err_str = str(err).lower()
-    if "429" in err_str or "quota" in err_str or "rate" in err_str:
-        return f"rate_limit_exceeded ({err_type})"
-    if "503" in err_str or "unavailable" in err_str:
-        return f"service_unavailable ({err_type})"
-    if "timeout" in err_str or "timed out" in err_str:
-        return f"request_timeout ({err_type})"
-    if "404" in err_str or "not found" in err_str:
-        return f"model_not_found ({err_type})"
-    if "401" in err_str or "403" in err_str or "auth" in err_str or "permission" in err_str:
-        return f"upstream_auth_error ({err_type})"
-    return f"primary_unavailable ({err_type})"
+    return classify_model_error(err)[1]
 
 
 class InvestigationSession:
-    """Per-investigation execution session tracking model calls, tokens, and fallback state."""
+    """Per-investigation execution session tracking active model, tokens, and fallback state."""
 
     def __init__(
         self,
@@ -61,9 +104,9 @@ class InvestigationSession:
     ) -> None:
         self.configured_primary = configured_primary
         self.configured_fallback = configured_fallback
-        self.model_used = default_model or configured_primary
+        self.active_model = default_model or configured_primary
         self.models_used: list[str] = (
-            [default_model or configured_primary] if not is_offline_fake else ["offline-deterministic-fake"]
+            [self.active_model] if not is_offline_fake else ["offline-deterministic-fake"]
         )
         self.thinking_level = thinking_level
         self.is_offline_fake = is_offline_fake
@@ -72,6 +115,14 @@ class InvestigationSession:
         self.prompt_tokens: Optional[int] = None
         self.completion_tokens: Optional[int] = None
         self.call_trace: list[ModelCallTrace] = []
+
+    @property
+    def model_used(self) -> str:
+        return self.active_model
+
+    @model_used.setter
+    def model_used(self, val: str) -> None:
+        self.active_model = val
 
     def record_call(
         self,
@@ -85,7 +136,7 @@ class InvestigationSession:
         """Record model execution metrics into this isolated session."""
         if self.is_offline_fake:
             return
-        self.model_used = model
+        self.active_model = model
         if model not in self.models_used:
             self.models_used.append(model)
         if fallback_used:
@@ -124,7 +175,7 @@ class InvestigationSession:
         return ModelExecutionMetadata(
             configured_primary_model=str(self.configured_primary),
             configured_fallback_model=str(self.configured_fallback) if self.configured_fallback else None,
-            model_used=str(self.model_used),
+            model_used=str(self.active_model),
             models_used=list(self.models_used),
             thinking_level=self.thinking_level,
             fallback_occurred=self.fallback_occurred,
@@ -168,7 +219,7 @@ class LLMProviderProtocol(Protocol):
         winning_strategy: StrategyScore,
         top_alternative: StrategyScore,
         session: Optional[InvestigationSession] = None,
-    ) -> DecisionExplanation: ...
+    ) -> DecisionNarrativeDraft: ...
 
     def get_execution_metadata(self, session: Optional[InvestigationSession] = None) -> ModelExecutionMetadata: ...
 
@@ -209,11 +260,11 @@ class FakeGeminiProvider:
         if round_index == 1 or "telemetry" not in collected_sources:
             tool_calls = [
                 DiagnosticToolCall(
-                    tool_name="query_telemetry",
+                    tool_name=DiagnosticToolName.QUERY_TELEMETRY,
                     reasoning="Collect end-to-end workload latency, error rates, and hit ratios across all tiers.",
                 ),
                 DiagnosticToolCall(
-                    tool_name="run_health_probes",
+                    tool_name=DiagnosticToolName.RUN_HEALTH_PROBES,
                     reasoning="Execute isolated synthetic probes to verify liveness independent of production workload.",
                 ),
             ]
@@ -228,7 +279,7 @@ class FakeGeminiProvider:
             return DiagnosticActionBatch(
                 tool_calls=[
                     DiagnosticToolCall(
-                        tool_name="fetch_operational_events",
+                        tool_name=DiagnosticToolName.FETCH_OPERATIONAL_EVENTS,
                         reasoning="Query queue consumer heartbeats, worker crash logs, and cache eviction streams.",
                     )
                 ],
@@ -401,31 +452,11 @@ class FakeGeminiProvider:
         winning_strategy: StrategyScore,
         top_alternative: StrategyScore,
         session: Optional[InvestigationSession] = None,
-    ) -> DecisionExplanation:
-        """Provide defensible written justification for strategy ranking with structured grounding."""
+    ) -> DecisionNarrativeDraft:
+        """Provide defensible written narrative justifying strategy ranking without duplicating deterministic grounding."""
         top_hyp = hypotheses[0] if hypotheses else None
         top_hyp_name = top_hyp.name if top_hyp else "Primary Cause"
 
-        # Determine alternative advantage dimension and values
-        alt_dim = "none"
-        alt_val = 0.0
-        win_val = 0.0
-        if top_alternative.speed > winning_strategy.speed:
-            alt_dim = "speed"
-            alt_val = top_alternative.speed
-            win_val = winning_strategy.speed
-        elif top_alternative.affordability > winning_strategy.affordability:
-            alt_dim = "affordability"
-            alt_val = top_alternative.affordability
-            win_val = winning_strategy.affordability
-        elif top_alternative.safety > winning_strategy.safety:
-            alt_dim = "safety"
-            alt_val = top_alternative.safety
-            win_val = winning_strategy.safety
-
-        rejection_risk = top_alternative.risk_notes or "Operational risk"
-
-        # Grounded contradiction analysis
         has_migration = any("migration" in obs.signal for obs in evidence_ledger)
         if has_migration:
             contradiction_text = (
@@ -451,27 +482,12 @@ class FakeGeminiProvider:
                 f"Recovering the consumer safely restores end-to-end cache invalidation without risking database collapse."
             )
 
-        grounding = StructuredDecisionGrounding(
-            winning_strategy_id=winning_strategy.strategy_id,
-            winning_strategy_name=winning_strategy.name,
-            top_cause_code=top_hyp.cause_code if top_hyp else RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
-            reconciled_conflict_ids=[c.id for c in conflicts],
-            reconciled_evidence_ids=[eid for c in conflicts for eid in c.evidence_ids],
-            alternative_strategy_id=top_alternative.strategy_id,
-            alternative_strategy_name=top_alternative.name,
-            alternative_advantage_dimension=AdvantageDimension(alt_dim),
-            alternative_advantage_value=alt_val,
-            winning_advantage_value=win_val,
-            rejection_risk_factor=rejection_risk,
-        )
-
-        return DecisionExplanation(
+        return DecisionNarrativeDraft(
             executive_summary=(
                 f"Recommended Action: '{winning_strategy.name}' (Final Score: {winning_strategy.final_score}/100). "
                 f"Multi-source diagnostic investigation isolated the root cause to '{top_hyp_name}', supported by independent "
                 f"diagnostic evidence. The apparent database latency is reconciled by root-cause analysis."
             ),
-            winning_strategy_id=winning_strategy.strategy_id,
             trade_off_comparison=TradeOffComparison(
                 alternative_strategy_id=top_alternative.strategy_id,
                 alternative_strategy_name=top_alternative.name,
@@ -485,7 +501,8 @@ class FakeGeminiProvider:
             remaining_uncertainties=(
                 top_hyp.unresolved_uncertainties if top_hyp else ["Execution duration under live production workload."]
             ),
-            grounding=grounding,
+            referenced_conflict_ids=[c.id for c in conflicts],
+            referenced_evidence_ids=[eid for c in conflicts for eid in c.evidence_ids],
         )
 
     def get_execution_metadata(self, session: Optional[InvestigationSession] = None) -> ModelExecutionMetadata:
@@ -495,7 +512,7 @@ class FakeGeminiProvider:
 
 
 class GeminiProvider:
-    """Production provider using Google GenAI SDK with startup model discovery, robust retry, and per-session isolation."""
+    """Production provider using Google GenAI SDK with startup model discovery, sticky fallback, and per-session isolation."""
 
     def __init__(
         self,
@@ -503,9 +520,11 @@ class GeminiProvider:
         preferred_model: Optional[str] = None,
         fallback_model: Optional[str] = None,
         thinking_level: str = "medium",
+        request_timeout_seconds: int = 30,
     ) -> None:
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.thinking_level = os.getenv("GEMINI_THINKING_LEVEL", thinking_level)
+        self.request_timeout_seconds = request_timeout_seconds
         self.configured_primary: str = preferred_model or os.getenv("GEMINI_MODEL") or "gemini-3.7-flash"
         self.configured_fallback: Optional[str] = (
             fallback_model or os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-3.6-flash"
@@ -514,6 +533,7 @@ class GeminiProvider:
         self.primary_model: str = self.configured_primary
         self.fallback_model: Optional[str] = self.configured_fallback
         self.discovered_accessible: bool = False
+        self.model_resolution_status: str = "uninitialized"
 
         self._client: Optional[Any] = None
         self._initialize_and_probe_models()
@@ -529,9 +549,10 @@ class GeminiProvider:
         )
 
     def _initialize_and_probe_models(self) -> None:
-        """Initialize Google GenAI client and verify accessible model IDs once at startup."""
+        """Initialize Google GenAI client and verify accessible model IDs once at startup without fuzzy set matching."""
         if not self.api_key:
-            logger.info("No GEMINI_API_KEY provided. Provider will operate with configured model IDs in offline mode.")
+            logger.info("No GEMINI_API_KEY provided. Provider will operate in offline mode.")
+            self.model_resolution_status = "offline"
             return
 
         try:
@@ -540,39 +561,67 @@ class GeminiProvider:
             self._client = genai.Client(api_key=self.api_key)
 
             # Probe available models once on startup
-            available_model_names: set[str] = set()
+            available_model_names: list[str] = []
             try:
                 for m in self._client.models.list():
                     name = getattr(m, "name", "")
                     if name:
-                        available_model_names.add(name.replace("models/", ""))
+                        available_model_names.append(name.replace("models/", ""))
             except Exception as probe_err:
                 logger.warning(f"Could not list Gemini models on startup: {probe_err}")
 
-            # Verify if 3.7 Flash is accessible under exact or versioned identifier
-            matched_37 = next((m for m in available_model_names if "3.7-flash" in m), None)
             if self.configured_primary in available_model_names:
                 self.primary_model = self.configured_primary
-                self.fallback_model = "gemini-3.6-flash"
+                if self.configured_fallback and self.configured_fallback in available_model_names:
+                    self.fallback_model = self.configured_fallback
+                else:
+                    self.fallback_model = None
                 self.discovered_accessible = True
-            elif matched_37:
-                self.primary_model = matched_37
-                self.fallback_model = "gemini-3.6-flash"
-                self.discovered_accessible = True
-            elif "gemini-3.6-flash" in available_model_names:
-                self.primary_model = "gemini-3.6-flash"
+                self.model_resolution_status = "verified"
+            elif self.configured_fallback and self.configured_fallback in available_model_names:
+                self.primary_model = self.configured_fallback
                 self.fallback_model = None
                 self.discovered_accessible = True
+                self.model_resolution_status = "fallback_active"
             else:
                 self.primary_model = self.configured_primary
+                self.fallback_model = self.configured_fallback
                 self.discovered_accessible = False
+                self.model_resolution_status = "unavailable"
 
-            logger.info(f"Resolved Gemini runtime model: primary={self.primary_model}, fallback={self.fallback_model}")
-
+            logger.info(
+                f"Resolved Gemini runtime model: primary={self.primary_model}, fallback={self.fallback_model}, status={self.model_resolution_status}"
+            )
         except ImportError:
             logger.warning("google-genai package not installed; falling back to offline stub mode.")
+            self.model_resolution_status = "offline"
         except Exception as e:
             logger.error(f"Error initializing Gemini client: {e}")
+            self.model_resolution_status = "unavailable"
+
+    def _build_generation_config(self, response_schema: Type[T]) -> Any:
+        """Construct authoritative generation config with thinking_level and request timeout."""
+        from google.genai import types
+
+        thinking_config = None
+        if self.thinking_level and self.thinking_level.lower() != "none":
+            try:
+                level_enum = getattr(types.ThinkingLevel, self.thinking_level.upper(), None)
+                if level_enum is not None:
+                    thinking_config = types.ThinkingConfig(thinking_level=level_enum)
+                else:
+                    thinking_config = types.ThinkingConfig(thinking_level=self.thinking_level.lower())  # type: ignore[arg-type]
+            except Exception:
+                pass
+
+        http_options = types.HttpOptions(timeout=self.request_timeout_seconds)
+
+        return types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=response_schema,
+            thinking_config=thinking_config,
+            http_options=http_options,
+        )
 
     def _call_gemini_structured(
         self,
@@ -581,28 +630,12 @@ class GeminiProvider:
         task: str = "structured_call",
         session: Optional[InvestigationSession] = None,
     ) -> T:
-        """Call Gemini API requesting structured output conforming to a Pydantic schema with retry/fallback."""
+        """Call Gemini API requesting structured output conforming to a Pydantic schema with sticky fallback and repair."""
         if not self._client:
-            raise RuntimeError("Gemini client not initialized (GEMINI_API_KEY is missing or invalid)")
+            raise ModelUnavailableError("Gemini client not initialized (GEMINI_API_KEY is missing or invalid)")
 
-        from google.genai import types
-
-        config_kwargs: dict[str, Any] = {
-            "response_mime_type": "application/json",
-            "response_schema": response_schema,
-        }
-
-        # Configure thinking config if supported
-        try:
-            if hasattr(types, "ThinkingConfig"):
-                budget = 1024 if self.thinking_level == "medium" else (2048 if self.thinking_level == "high" else 0)
-                config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=budget)
-        except Exception:
-            pass
-
-        config = types.GenerateContentConfig(**config_kwargs)
-
-        target_model = self.primary_model
+        config = self._build_generation_config(response_schema)
+        target_model = session.active_model if session else self.primary_model
         fallback_used = False
         fallback_msg = None
 
@@ -613,24 +646,50 @@ class GeminiProvider:
                 config=config,
             )
         except Exception as primary_network_err:
-            sanitized_reason = sanitize_error_category(primary_network_err)
-            logger.warning(f"Primary model {target_model} call failed with error: {sanitized_reason}")
+            is_eligible, sanitized_reason = classify_model_error(primary_network_err)
+            logger.warning(
+                f"Model call failed on '{target_model}' (eligible_for_fallback={is_eligible}): {sanitized_reason}"
+            )
+
+            if not is_eligible:
+                if "bad_request" in sanitized_reason:
+                    raise ModelRequestError(
+                        f"Bad request to model '{target_model}': {sanitized_reason}"
+                    ) from primary_network_err
+                if "authentication_failed" in sanitized_reason or "permission_denied" in sanitized_reason:
+                    raise ModelAuthenticationError(
+                        f"Authentication failed for model '{target_model}': {sanitized_reason}"
+                    ) from primary_network_err
+                raise primary_network_err
+
+            # Eligible for fallback: check if fallback model is configured and distinct
             if self.fallback_model and self.fallback_model != target_model:
-                logger.info(f"Retrying with fallback model {self.fallback_model}")
+                logger.info(f"Sticky fallback taking over with model '{self.fallback_model}'")
                 target_model = self.fallback_model
                 fallback_used = True
                 fallback_msg = sanitized_reason
-                fallback_config = types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=response_schema,
-                )
-                response = self._client.models.generate_content(
-                    model=target_model,
-                    contents=prompt,
-                    config=fallback_config,
-                )
+                fallback_config = self._build_generation_config(response_schema)
+                try:
+                    response = self._client.models.generate_content(
+                        model=target_model,
+                        contents=prompt,
+                        config=fallback_config,
+                    )
+                    # Fallback succeeded: make fallback sticky in this session
+                    if session:
+                        session.active_model = target_model
+                        session.fallback_occurred = True
+                        session.fallback_reason = sanitized_reason
+                except Exception as fallback_err:
+                    _, fb_sanitized = classify_model_error(fallback_err)
+                    logger.error(f"Fallback model '{target_model}' also failed: {fb_sanitized}")
+                    raise ModelUnavailableError(
+                        f"Both primary and fallback models failed: {sanitized_reason}; fallback error: {fb_sanitized}"
+                    ) from fallback_err
             else:
-                raise primary_network_err
+                if "timeout" in sanitized_reason:
+                    raise AnalysisTimeoutError(f"Model request timed out: {sanitized_reason}") from primary_network_err
+                raise ModelUnavailableError(f"Model '{target_model}' unavailable: {sanitized_reason}") from primary_network_err
 
         # Capture and accumulate token usage into session
         p_toks: Optional[int] = None
@@ -657,30 +716,38 @@ class GeminiProvider:
             return cast(T, response_schema.model_validate_json(raw_text))
         except (ValidationError, json.JSONDecodeError) as parse_err:
             logger.warning(f"Structured output schema validation failed: {parse_err}. Attempting 1 same-model repair.")
-            # Perform one same-model correction prompt
-            repair_prompt = f"{prompt}\n\nCRITICAL: Your previous response failed schema validation with error: {parse_err}.\nPlease output ONLY valid JSON matching the exact schema."
-            repaired_response = self._client.models.generate_content(
-                model=target_model,
-                contents=repair_prompt,
-                config=config,
+            repair_prompt = (
+                f"{prompt}\n\nCRITICAL: Your previous response failed schema validation with error: {parse_err}.\n"
+                "Please output ONLY valid JSON matching the exact schema."
             )
-            # Record repair tokens if session is present
+            repair_config = self._build_generation_config(response_schema)
             try:
-                if hasattr(repaired_response, "usage_metadata") and repaired_response.usage_metadata:
+                repaired_response = self._client.models.generate_content(
+                    model=target_model,
+                    contents=repair_prompt,
+                    config=repair_config,
+                )
+                if session and hasattr(repaired_response, "usage_metadata") and repaired_response.usage_metadata:
                     rp_toks = getattr(repaired_response.usage_metadata, "prompt_token_count", None)
                     rc_toks = getattr(repaired_response.usage_metadata, "candidates_token_count", None)
-                    if session:
-                        session.record_call(
-                            task=f"{task}_repair",
-                            model=target_model,
-                            prompt_tokens=rp_toks,
-                            completion_tokens=rc_toks,
-                        )
-            except Exception:
-                pass
-
-            repaired_text = repaired_response.text or "{}"
-            return cast(T, response_schema.model_validate_json(repaired_text))
+                    session.record_call(
+                        task=f"{task}_repair",
+                        model=target_model,
+                        prompt_tokens=rp_toks,
+                        completion_tokens=rc_toks,
+                    )
+                repaired_text = repaired_response.text or "{}"
+                return cast(T, response_schema.model_validate_json(repaired_text))
+            except (ValidationError, json.JSONDecodeError) as repair_val_err:
+                logger.error(f"Same-model repair failed schema validation: {repair_val_err}")
+                raise InvalidModelOutputError(
+                    f"Model '{target_model}' generated invalid structured output that failed repair: {repair_val_err}"
+                ) from repair_val_err
+            except Exception as repair_call_err:
+                logger.error(f"Error during same-model repair call: {repair_call_err}")
+                raise InvalidModelOutputError(
+                    f"Model '{target_model}' repair call failed: {repair_call_err}"
+                ) from repair_call_err
 
     def choose_diagnostics(
         self,
@@ -783,7 +850,7 @@ For each hypothesis:
         winning_strategy: StrategyScore,
         top_alternative: StrategyScore,
         session: Optional[InvestigationSession] = None,
-    ) -> DecisionExplanation:
+    ) -> DecisionNarrativeDraft:
         """Ask Gemini to generate defensible executive reasoning defending the deterministic strategy ranking."""
         if not self._client:
             fake = FakeGeminiProvider(self.primary_model, self.thinking_level)
@@ -854,42 +921,9 @@ Requirements:
 3. Grounded Contradiction Analysis: Explain how the conflicting diagnostics (e.g. database workload latency vs healthy direct probe) are reconciled.
 4. Remaining Uncertainties: State any operational unknowns for the operator.
 """
-        explanation = self._call_gemini_structured(
-            prompt, DecisionExplanation, task="explain_decision", session=session
+        return self._call_gemini_structured(
+            prompt, DecisionNarrativeDraft, task="explain_decision", session=session
         )
-
-        # Deterministically attach authoritative grounding skeleton
-        top_hyp = hypotheses[0] if hypotheses else None
-        alt_dim = "none"
-        alt_val = 0.0
-        win_val = 0.0
-        if top_alternative.speed > winning_strategy.speed:
-            alt_dim = "speed"
-            alt_val = top_alternative.speed
-            win_val = winning_strategy.speed
-        elif top_alternative.affordability > winning_strategy.affordability:
-            alt_dim = "affordability"
-            alt_val = top_alternative.affordability
-            win_val = winning_strategy.affordability
-        elif top_alternative.safety > winning_strategy.safety:
-            alt_dim = "safety"
-            alt_val = top_alternative.safety
-            win_val = winning_strategy.safety
-
-        explanation.grounding = StructuredDecisionGrounding(
-            winning_strategy_id=winning_strategy.strategy_id,
-            winning_strategy_name=winning_strategy.name,
-            top_cause_code=top_hyp.cause_code if top_hyp else RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
-            reconciled_conflict_ids=[c.id for c in conflicts],
-            reconciled_evidence_ids=[eid for c in conflicts for eid in c.evidence_ids],
-            alternative_strategy_id=top_alternative.strategy_id,
-            alternative_strategy_name=top_alternative.name,
-            alternative_advantage_dimension=AdvantageDimension(alt_dim),
-            alternative_advantage_value=alt_val,
-            winning_advantage_value=win_val,
-            rejection_risk_factor=top_alternative.risk_notes or "Operational risk",
-        )
-        return explanation
 
     def get_execution_metadata(self, session: Optional[InvestigationSession] = None) -> ModelExecutionMetadata:
         if session:

@@ -92,12 +92,27 @@ export interface TradeOffComparison {
   rejection_rationale: string;
 }
 
+export interface StructuredDecisionGrounding {
+  winning_strategy_id: string;
+  winning_strategy_name: string;
+  top_cause_code: RootCauseCode;
+  reconciled_conflict_ids: string[];
+  reconciled_evidence_ids: string[];
+  alternative_strategy_id: string;
+  alternative_strategy_name: string;
+  alternative_advantage_dimension: string;
+  alternative_advantage_value: number;
+  winning_advantage_value: number;
+  rejection_risk_factor: string;
+}
+
 export interface DecisionExplanation {
   executive_summary: string;
   winning_strategy_id: string;
   trade_off_comparison: TradeOffComparison;
   grounded_contradiction_analysis: string;
   remaining_uncertainties: string[];
+  grounding?: StructuredDecisionGrounding;
 }
 
 export interface InvestigationTraceItem {
@@ -167,4 +182,6 @@ export interface HealthResponse {
   runtime_model: string;
   fallback_model?: string;
   discovered_accessible?: boolean;
+  model_resolution_status?: string;
 }
+

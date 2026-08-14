@@ -15,7 +15,16 @@ from fastapi.staticfiles import StaticFiles
 
 from faultline.diagnostics import ScenarioRepository
 from faultline.gemini import FakeGeminiProvider, GeminiProvider, LLMProviderProtocol
-from faultline.models import AnalysisResult, AnalyzeRequest
+from faultline.models import (
+    AnalysisResult,
+    AnalysisTimeoutError,
+    AnalyzeRequest,
+    InsufficientEvidenceError,
+    InvalidModelOutputError,
+    ModelAuthenticationError,
+    ModelRequestError,
+    ModelUnavailableError,
+)
 from faultline.orchestrator import IncidentOrchestrator, OrchestratorError
 from faultline.reasoning import PolicyEngine
 from faultline.validation import ValidationError
@@ -79,6 +88,9 @@ def health_check() -> dict[str, Any]:
     model_name = provider.primary_model if provider else "unknown"
     fallback_name = getattr(provider, "fallback_model", None) if provider else None
     discovered = getattr(provider, "discovered_accessible", True) if provider else True
+    model_resolution_status = getattr(
+        provider, "model_resolution_status", "verified" if discovered else "unavailable"
+    ) if provider else "offline"
     mode = "live_gemini" if (api_key_configured and isinstance(provider, GeminiProvider)) else "deterministic_fake"
 
     return {
@@ -90,6 +102,7 @@ def health_check() -> dict[str, Any]:
         "runtime_model": model_name,
         "fallback_model": fallback_name,
         "discovered_accessible": discovered,
+        "model_resolution_status": model_resolution_status,
     }
 
 
@@ -112,7 +125,22 @@ def analyze_incident(req: AnalyzeRequest) -> AnalysisResult:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Scenario '{req.scenario_id}' was not found in the scenario repository.",
         ) from fnf
-    except (ValidationError, OrchestratorError) as ve:
+    except ModelRequestError as mre:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Upstream model request invalid: {mre}",
+        ) from mre
+    except (ModelAuthenticationError, ModelUnavailableError) as mue:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Model provider is currently unavailable: {mue}",
+        ) from mue
+    except AnalysisTimeoutError as ate:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"Analysis timed out: {ate}",
+        ) from ate
+    except (ValidationError, OrchestratorError, InvalidModelOutputError, InsufficientEvidenceError) as ve:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Analysis failed domain validation: {ve}",

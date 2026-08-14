@@ -129,7 +129,7 @@ $$\text{Final Score} = 0.60 \times \text{Expected Impact} + 0.20 \times \text{Sa
 
 | Rank | Strategy ID | Strategy Name | Impact (60%) | Safety (20%) | Speed (15%) | Cost (5%) | Final Score | Suggested Action Command |
 | :---: | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **#1** | `RECOVER_CONSUMER_AND_DRAIN` | Restart Invalidation Consumer & Drain Backlog | **73.7** | **75.0** | 50.0 | 75.0 | **70.47** | `kubectl rollout restart deployment/cache-invalidation-worker -n services && redis-cli info` |
+| **#1** | `RECOVER_CONSUMER_AND_DRAIN` | Restart Invalidation Consumer & Drain Backlog | **73.7** | **75.0** | 50.0 | 75.0 | **70.46** | `kubectl rollout restart deployment/cache-invalidation-worker -n services && redis-cli info` |
 | **#2** | `THROTTLE_TRAFFIC` | Apply API Gateway Rate Limiting & Load Shedding | 63.2 | 75.0 | 75.0 | 75.0 | **67.89** | `kubectl patch ingress/api-gateway -n ingress --type merge -p '{"spec":{"rateLimit":{"requestsPerSecond":500}}}'` |
 | **#3** | `RESTART_CACHE` | Flush & Restart Cache Cluster | 18.4 | 25.0 | **100.0** | **100.0** | **36.05** | `redis-cli flushall && systemctl restart redis-server` |
 | **#4** | `REBUILD_DATABASE_INDEX` | Rebuild Missing Database Index Concurrently | 0.0 | 75.0 | 50.0 | 75.0 | **26.25** | `psql -c "CREATE INDEX CONCURRENTLY idx_orders_customer_created ON orders (customer_id, created_at);"` |
@@ -178,7 +178,7 @@ $$\text{Final Score} = 0.60 \times \text{Expected Impact} + 0.20 \times \text{Sa
 ### Prerequisites
 - Python 3.11+ (or `uv`)
 - Node.js 20+ (for frontend dashboard)
-- (Optional) `GEMINI_API_KEY` for live LLM reasoning (runs fully deterministic without an API key).
+- (Optional) `GEMINI_API_KEY` for live LLM reasoning (runs fully deterministic in offline mode without an API key).
 
 ### Option A: Local Python & React Setup
 ```bash
@@ -199,8 +199,8 @@ uv pip install -e ".[dev]"
 cp .env.example .env
 # Edit .env and set GEMINI_API_KEY=...
 
-# 4. Run CLI analysis directly
-python -m faultline.cli analyze --scenario cache_invalidation_lag
+# 4. Run CLI analysis directly (offline deterministic mode)
+python -m faultline.cli analyze --offline --scenario cache_invalidation_lag
 
 # 5. Start Backend API Server
 uvicorn faultline.app:app --host 0.0.0.0 --port 8000
@@ -228,7 +228,7 @@ docker run -p 8000:8000 -e GEMINI_API_KEY="your-api-key-optional" faultline
 ## 6. Testing & Quality Verification
 
 ```bash
-# Run all unit and integration tests (32 tests, 100% passing)
+# Run all unit and integration tests (55 tests, 100% passing)
 pytest tests/ -v
 
 # Run linting check
@@ -237,8 +237,8 @@ ruff check src/ tests/
 # Run static type checking
 mypy src/ tests/
 
-# Run frontend typechecking and linting
-cd frontend && npm run test:run
+# Run frontend typechecking and tests (5 tests, 100% passing)
+cd frontend && npm run verify
 
 # Build production frontend bundle
 cd frontend && npm run build
@@ -246,12 +246,16 @@ cd frontend && npm run build
 
 ---
 
-## 7. Secondary Scenario & Extensions
+## 7. Scenarios & Future Extensions
 
-Faultline includes secondary validation scenarios out-of-the-box:
-- **`data/scenarios/index_regression.json`**: Database synthetic ping responds healthy (<2ms), but query workload experiences heavy table scans following an unindexed schema migration. Faultline deterministically ranks `REBUILD_DATABASE_INDEX` as the #1 repair strategy over traffic throttling.
-- **Dynamic Scenario Injection**: Real-time chaos engineering simulator generating synthetic network partitions, memory leaks, and replica lag.
-- **Post-Mortem Auto-Generation**: Automated markdown incident post-mortems exported to incident response repositories.
+Faultline includes tested scenarios out-of-the-box:
+- **`data/scenarios/cache_invalidation_lag.json`**: Canonical incident with stalled invalidation consumer, 42,000-message backlog, and scope tension between direct DB health probes and saturated workload connections.
+- **`data/scenarios/index_regression.json`**: Database synthetic ping responds healthy (<2ms), but query workload experiences heavy table scans following an unindexed schema migration. Faultline deterministically ranks `REBUILD_DATABASE_INDEX` as the #1 repair strategy.
+
+### What I Would Build Next:
+- **Dynamic Scenario Generator**: Real-time chaos engineering simulator generating synthetic network partitions, memory leaks, and replica lag.
+- **Automated Post-Mortem Exporter**: Markdown incident post-mortems exported automatically to GitHub issues or incident response repositories.
+- **Dynamic Multi-Cluster Telemetry Ingestion**: Direct Prometheus / OpenTelemetry OTLP receiver adapter.
 
 ---
 
@@ -265,4 +269,5 @@ In accordance with LEC AI's guidelines, modern AI developer tooling (Gemini 3.7 
 
 - **Repository**: [https://github.com/AnasBabari/LEC_AI](https://github.com/AnasBabari/LEC_AI) *(Public)*
 - **Interactive UI Dashboard**: Available locally at `http://localhost:5173` or in Docker at `http://localhost:8000`.
-- **Reference Analysis Output**: Available at [`examples/canonical-report.json`](examples/canonical-report.json).
+- **Reference Analysis Output**: Available at [`examples/canonical-report.offline.json`](examples/canonical-report.offline.json).
+
