@@ -36,7 +36,7 @@ flowchart TD
     end
 
     subgraph Tooling ["Diagnostic Execution (Bounded Loop)"]
-        Gemini_Selector["Gemini Tool Selector\n(Max 3 rounds, 5 attempts)"]
+        Gemini_Selector["Gemini Tool Selector\n(Max 3 rounds, 8 attempts)"]
         Tool_Telemetry["Workload Telemetry Tool"]
         Tool_Probes["Synthetic Health Probe Tool"]
         Tool_Events["Operational Events Tool"]
@@ -200,7 +200,7 @@ cp .env.example .env
 # Edit .env and set GEMINI_API_KEY=...
 
 # 4. Run CLI analysis directly (offline deterministic mode)
-python -m faultline.cli analyze --offline --scenario cache_invalidation_lag
+uv run faultline analyze --offline --scenario cache_invalidation_lag
 
 # 5. Start Backend API Server
 uvicorn faultline.app:app --host 0.0.0.0 --port 8000
@@ -228,7 +228,7 @@ docker run -p 8000:8000 -e GEMINI_API_KEY="your-api-key-optional" faultline
 ## 6. Testing & Quality Verification
 
 ```bash
-# Run all unit and integration tests (62 tests, 100% passing)
+# Run all unit and integration tests (69 offline tests, 100% passing)
 pytest tests/ -v
 
 # Run linting check

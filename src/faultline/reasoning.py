@@ -424,11 +424,19 @@ class EvidenceEvaluator:
                     f"Observation '{opp_id}' is a supporting signal for {draft.cause_code.value}, cannot be cited as opposing"
                 )
 
-        # 3. Validate contextual citations
+        # 3. Validate contextual citations (must exist in ledger and NOT match causal rules for this cause)
         for ctx_id in draft.contextual_evidence_ids:
             obs = obs_map.get(ctx_id)
             if not obs:
                 errors.append(f"Non-existent contextual citation '{ctx_id}' for {draft.cause_code.value}")
+                continue
+            matched = self._match_rule(obs, rules)
+            if matched:
+                rel = matched.get("relationship", "causal")
+                errors.append(
+                    f"Observation '{ctx_id}' ({obs.component.value}:{obs.signal}) matches a direct {rel.upper()} rule for {draft.cause_code.value}. "
+                    f"It must be placed in {rel}ing_evidence_ids rather than contextual_evidence_ids."
+                )
 
         # 4. Require at least one verified supporting citation
         if not valid_supporting and not errors:

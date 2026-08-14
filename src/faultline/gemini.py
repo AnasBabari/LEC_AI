@@ -98,13 +98,17 @@ class InvestigationSession:
         self,
         configured_primary: str,
         configured_fallback: Optional[str] = None,
+        startup_resolved_model: Optional[str] = None,
+        startup_resolution_status: Optional[str] = None,
         default_model: Optional[str] = None,
         thinking_level: str = "medium",
         is_offline_fake: bool = False,
     ) -> None:
         self.configured_primary = configured_primary
         self.configured_fallback = configured_fallback
-        self.active_model = default_model or configured_primary
+        self.startup_resolved_model = startup_resolved_model or default_model or configured_primary
+        self.startup_resolution_status = startup_resolution_status or ("offline_fake" if is_offline_fake else "verified_primary")
+        self.active_model = default_model or self.startup_resolved_model
         self.models_used: list[str] = (
             [self.active_model] if not is_offline_fake else ["offline-deterministic-fake"]
         )
@@ -163,11 +167,15 @@ class InvestigationSession:
             return ModelExecutionMetadata(
                 configured_primary_model=self.configured_primary,
                 configured_fallback_model=None,
+                startup_resolved_model="offline-deterministic-fake",
+                startup_resolution_status="offline_deterministic",
                 model_used="offline-deterministic-fake",
                 models_used=["offline-deterministic-fake"],
                 thinking_level="none",
                 fallback_occurred=False,
                 fallback_reason=None,
+                runtime_fallback_occurred=False,
+                runtime_fallback_reason=None,
                 prompt_tokens=None,
                 completion_tokens=None,
                 call_trace=[],
@@ -175,11 +183,15 @@ class InvestigationSession:
         return ModelExecutionMetadata(
             configured_primary_model=str(self.configured_primary),
             configured_fallback_model=str(self.configured_fallback) if self.configured_fallback else None,
+            startup_resolved_model=str(self.startup_resolved_model) if self.startup_resolved_model else None,
+            startup_resolution_status=str(self.startup_resolution_status) if self.startup_resolution_status else None,
             model_used=str(self.active_model),
             models_used=list(self.models_used),
             thinking_level=self.thinking_level,
             fallback_occurred=self.fallback_occurred,
             fallback_reason=self.fallback_reason,
+            runtime_fallback_occurred=self.fallback_occurred,
+            runtime_fallback_reason=self.fallback_reason,
             prompt_tokens=self.prompt_tokens,
             completion_tokens=self.completion_tokens,
             call_trace=list(self.call_trace),
@@ -533,6 +545,9 @@ class FakeGeminiProvider:
         return self.create_session().get_execution_metadata()
 
 
+ALLOWED_THINKING_LEVELS = {"minimal", "low", "medium", "high", "none"}
+
+
 class GeminiProvider:
     """Production provider using Google GenAI SDK with startup model discovery, sticky fallback, and per-session isolation."""
 
@@ -541,11 +556,16 @@ class GeminiProvider:
         api_key: Optional[str] = None,
         preferred_model: Optional[str] = None,
         fallback_model: Optional[str] = None,
-        thinking_level: str = "medium",
+        thinking_level: Optional[str] = None,
         request_timeout_seconds: int = 30,
     ) -> None:
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
-        self.thinking_level = os.getenv("GEMINI_THINKING_LEVEL", thinking_level)
+        raw_level = thinking_level or os.getenv("GEMINI_THINKING_LEVEL") or "medium"
+        if raw_level.lower() not in ALLOWED_THINKING_LEVELS:
+            raise ValueError(
+                f"Invalid thinking_level '{raw_level}'. Allowed values: {sorted(ALLOWED_THINKING_LEVELS)}"
+            )
+        self.thinking_level = raw_level.lower()
         self.request_timeout_seconds = request_timeout_seconds
         self.configured_primary: str = preferred_model or os.getenv("GEMINI_MODEL") or "gemini-3.7-flash"
         self.configured_fallback: Optional[str] = (
@@ -563,8 +583,10 @@ class GeminiProvider:
     def create_session(self) -> InvestigationSession:
         """Create a fresh isolated session for a single incident investigation."""
         return InvestigationSession(
-            configured_primary=self.primary_model,
-            configured_fallback=self.fallback_model,
+            configured_primary=self.configured_primary,
+            configured_fallback=self.configured_fallback,
+            startup_resolved_model=self.primary_model,
+            startup_resolution_status=self.model_resolution_status,
             default_model=self.primary_model,
             thinking_level=self.thinking_level,
             is_offline_fake=not bool(self._client),
@@ -633,15 +655,12 @@ class GeminiProvider:
         from google.genai import types
 
         thinking_config = None
-        if self.thinking_level and self.thinking_level.lower() != "none":
-            try:
-                level_enum = getattr(types.ThinkingLevel, self.thinking_level.upper(), None)
-                if level_enum is not None:
-                    thinking_config = types.ThinkingConfig(thinking_level=level_enum)
-                else:
-                    thinking_config = types.ThinkingConfig(thinking_level=self.thinking_level.lower())  # type: ignore[arg-type]
-            except Exception:
-                pass
+        if self.thinking_level and self.thinking_level != "none":
+            level_enum = getattr(types.ThinkingLevel, self.thinking_level.upper(), None)
+            if level_enum is not None:
+                thinking_config = types.ThinkingConfig(thinking_level=level_enum)
+            else:
+                thinking_config = types.ThinkingConfig(thinking_level=self.thinking_level)  # type: ignore[arg-type]
 
         http_options = types.HttpOptions(
             api_version="v1beta",
@@ -776,9 +795,26 @@ class GeminiProvider:
                     f"Model '{target_model}' generated invalid structured output that failed repair: {repair_val_err}"
                 ) from repair_val_err
             except Exception as repair_call_err:
-                logger.error(f"Error during same-model repair call: {repair_call_err}")
+                is_eligible, sanitized_reason = classify_model_error(repair_call_err)
+                logger.error(f"Error during same-model repair call: {sanitized_reason}")
+                if "bad_request" in sanitized_reason:
+                    raise ModelRequestError(
+                        f"Bad request during model '{target_model}' repair: {sanitized_reason}"
+                    ) from repair_call_err
+                if "authentication_failed" in sanitized_reason or "permission_denied" in sanitized_reason:
+                    raise ModelAuthenticationError(
+                        f"Authentication failed during model '{target_model}' repair: {sanitized_reason}"
+                    ) from repair_call_err
+                if "timeout" in sanitized_reason:
+                    raise AnalysisTimeoutError(
+                        f"Model '{target_model}' repair timed out: {sanitized_reason}"
+                    ) from repair_call_err
+                if is_eligible or "unavailable" in sanitized_reason or "server_error" in sanitized_reason or "rate_limit" in sanitized_reason:
+                    raise ModelUnavailableError(
+                        f"Model '{target_model}' unavailable during repair: {sanitized_reason}"
+                    ) from repair_call_err
                 raise InvalidModelOutputError(
-                    f"Model '{target_model}' repair call failed: {repair_call_err}"
+                    f"Model '{target_model}' repair call failed: {sanitized_reason}"
                 ) from repair_call_err
 
     def choose_diagnostics(

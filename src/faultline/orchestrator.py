@@ -15,7 +15,6 @@ from faultline.models import (
     ComponentEnum,
     DecisionExplanation,
     DiagnosticToolName,
-    EvidenceStrengthBand,
     ExecutionSafetySection,
     FaultReport,
     HealthDimension,
@@ -176,7 +175,13 @@ class IncidentOrchestrator:
 
                 after_count = len(ledger.get_observations())
                 appended = after_count - before_count
-                records_returned = len(res.get("observations", [])) if "observations" in res else appended
+                records_returned = int(
+                    len(res.get("records", []))
+                    or res.get("observations_count")
+                    or res.get("probes_executed")
+                    or res.get("events_count")
+                    or appended
+                )
                 deduplicated = max(0, records_returned - appended)
 
                 summary_msg = f"Executed '{t_name}': {res.get('summary', 'recorded observations')} (Returned: {records_returned}, Appended: {appended}, Deduplicated: {deduplicated})"
@@ -268,8 +273,8 @@ class IncidentOrchestrator:
                     validated_drafts = [d for d in repaired_set.hypotheses if d.supporting_evidence_ids and evaluator.validate_hypothesis_citations(d, ledger.get_observations())[0]]
                 except (ModelUnavailableError, AnalysisTimeoutError, ModelAuthenticationError, ModelRequestError):
                     raise
-                except Exception as rep_err:
-                    logger.error(f"Semantic hypothesis repair failed: {rep_err}")
+                except (InvalidModelOutputError, ValueError) as rep_err:
+                    logger.warning(f"Semantic hypothesis repair failed: {rep_err}")
                 if len(validated_drafts) < 2:
                     raise InvalidModelOutputError("Model failed to provide at least 2 valid grounded root-cause hypotheses.")
 
@@ -312,8 +317,8 @@ class IncidentOrchestrator:
                 top_cause_code=top_cause.cause_code if top_cause else RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
                 reconciled_conflict_ids=[c.id for c in conflicts],
                 reconciled_evidence_ids=[eid for c in conflicts for eid in c.evidence_ids],
-                referenced_conflict_ids=narrative_draft.referenced_conflict_ids or [c.id for c in conflicts],
-                referenced_evidence_ids=narrative_draft.referenced_evidence_ids or [eid for c in conflicts for eid in c.evidence_ids],
+                referenced_conflict_ids=list(narrative_draft.referenced_conflict_ids),
+                referenced_evidence_ids=list(narrative_draft.referenced_evidence_ids),
                 alternative_strategy_id=fastest_alternative.strategy_id,
                 alternative_strategy_name=fastest_alternative.name,
                 alternative_advantage_dimension=alt_dim,
@@ -379,7 +384,9 @@ class IncidentOrchestrator:
 
             self.validator.validate(result)
             result.validation_passed = True
-            result.state = LifecycleState.VALIDATED
+            transition_to(LifecycleState.VALIDATED, "Report passed all strict validation and safety checks.")
+            result.state = current_state
+            result.investigation_trace = list(trace)
 
             val_event = InvestigationTraceItem(
                 round_index=self.max_rounds + 5,

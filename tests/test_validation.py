@@ -14,7 +14,9 @@ from faultline.models import (
     HypothesisDraft,
     HypothesisDraftSet,
     InvalidModelOutputError,
+    LifecycleState,
     ObservationEvidenceScore,
+    PolicyConfig,
     RootCauseCode,
 )
 from faultline.orchestrator import IncidentOrchestrator, OrchestratorError
@@ -525,15 +527,15 @@ def test_validator_rejects_fewer_than_two_hypotheses() -> None:
     orchestrator = IncidentOrchestrator(provider=provider)
     result = orchestrator.analyze_scenario("cache_invalidation_lag")
 
-    # Tamper: truncate hypotheses to 1
+    # Tamper: truncate hypotheses to 1 (fewer than 2)
     result.hypotheses = result.hypotheses[:1]
-
-    # Note: result is a Pydantic model with hypotheses min_length=2 in draft, but result.hypotheses is a list
-    # When validating against validator, it checks positive evidence and policy consistency
-    # But if empty or invalid:
-    result.hypotheses = []
     validator = ReportValidator()
-    with pytest.raises(ValidationError, match="contains no evaluated hypotheses"):
+    with pytest.raises(ValidationError, match="must contain at least 2 evaluated hypotheses"):
+        validator.validate(result)
+
+    # Tamper: truncate hypotheses to 0
+    result.hypotheses = []
+    with pytest.raises(ValidationError, match="must contain at least 2 evaluated hypotheses"):
         validator.validate(result)
 
 
@@ -611,5 +613,73 @@ def test_tool_deduplication_accounting_in_trace() -> None:
         assert "records_appended" in tt.details
         assert "records_deduplicated" in tt.details
         assert tt.details["records_returned"] >= tt.details["records_appended"]
+
+
+def test_validator_rejects_causal_evidence_as_contextual() -> None:
+    """Validator rejects hypothesis when direct causal evidence is improperly cited in contextual_evidence_ids."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    # Get a verified supporting observation for the top hypothesis
+    causal_id = result.hypotheses[0].supporting_observations[0].evidence_id
+    # Tamper: add causal_id to contextual_evidence_ids of top hypothesis
+    result.hypotheses[0].contextual_evidence_ids = [causal_id]
+
+    validator = ReportValidator()
+    with pytest.raises(ValidationError, match=f"cites causal evidence '{causal_id}' as contextual"):
+        validator.validate(result)
+
+
+def test_validator_rejects_empty_model_conflict_references_when_conflicts_exist() -> None:
+    """Validator rejects StructuredDecisionGrounding when referenced_conflict_ids is empty despite conflicts existing."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    assert result.conflicts
+    assert result.recommendation.grounding is not None
+    result.recommendation.grounding.referenced_conflict_ids = []
+
+    validator = ReportValidator()
+    with pytest.raises(ValidationError, match="must reference at least one genuine conflict"):
+        validator.validate(result)
+
+
+def test_policy_config_rejects_incomplete_cause_catalogue() -> None:
+    """PolicyConfig rejects catalogues missing any RootCauseCode."""
+    policy = PolicyEngine()
+    data = dict(policy.policy_data)
+    data["cause_catalogue"] = dict(policy.cause_catalogue)
+    # Remove one cause code
+    del data["cause_catalogue"]["REPLICA_LAG"]
+
+    with pytest.raises(ValueError, match="cause_catalogue must contain full catalogue"):
+        PolicyConfig.model_validate(data)
+
+
+def test_policy_config_rejects_negative_weights() -> None:
+    """PolicyConfig rejects negative weights in reliability_weights or freshness_weights."""
+    policy = PolicyEngine()
+    data = dict(policy.policy_data)
+    data["reliability_weights"] = dict(policy.reliability_weights)
+    data["reliability_weights"]["verified"] = -5
+
+    with pytest.raises(ValueError, match="reliability_weight 'verified' must be non-negative"):
+        PolicyConfig.model_validate(data)
+
+
+def test_orchestrator_validating_to_validated_state_transition() -> None:
+    """IncidentOrchestrator properly transitions state from VALIDATING to VALIDATED via state machine."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    assert result.state == LifecycleState.VALIDATED
+    state_traces = [item for item in result.investigation_trace if item.action_type == "state_change"]
+    # Check that VALIDATING and VALIDATED are both recorded in trace
+    states_logged = [st.details.get("to_state") for st in state_traces]
+    assert LifecycleState.VALIDATING.value in states_logged
+    assert LifecycleState.VALIDATED.value in states_logged
 
 

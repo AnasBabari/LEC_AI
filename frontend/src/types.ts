@@ -124,7 +124,7 @@ export interface InvestigationTraceItem {
   timestamp: string;
   tool_name?: string;
   summary: string;
-  details: Record<string, any>;
+  details: Record<string, unknown>;
 }
 
 export interface ModelCallTrace {
@@ -138,11 +138,15 @@ export interface ModelCallTrace {
 export interface ModelExecutionMetadata {
   configured_primary_model: string;
   configured_fallback_model?: string;
+  startup_resolved_model?: string;
+  startup_resolution_status?: string;
   model_used: string;
   models_used?: string[];
   thinking_level: string;
   fallback_occurred: boolean;
   fallback_reason?: string;
+  runtime_fallback_occurred?: boolean;
+  runtime_fallback_reason?: string;
   prompt_tokens?: number;
   completion_tokens?: number;
   call_trace?: ModelCallTrace[];

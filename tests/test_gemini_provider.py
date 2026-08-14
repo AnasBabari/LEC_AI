@@ -384,3 +384,28 @@ def test_mock_gemini_both_models_fail_raises(monkeypatch: pytest.MonkeyPatch) ->
             session=session,
         )
     assert "Both primary and fallback models failed" in str(excinfo.value)
+
+
+def test_thinking_level_validation_rejects_invalid_values() -> None:
+    """GeminiProvider rejects unauthorized thinking_level values."""
+    with pytest.raises(ValueError, match="Invalid thinking_level 'super_high'"):
+        GeminiProvider(api_key="test", thinking_level="super_high")
+
+    # Valid values should succeed
+    for lvl in ("minimal", "low", "medium", "high", "none"):
+        p = GeminiProvider(api_key="test", thinking_level=lvl)
+        assert p.thinking_level == lvl
+
+
+def test_investigation_session_preserves_model_provenance() -> None:
+    """InvestigationSession faithfully records startup model and fallback metadata."""
+    provider = GeminiProvider(
+        api_key="dummy-key",
+        preferred_model="gemini-3.7-flash",
+        fallback_model="gemini-3.6-flash",
+    )
+    session = provider.create_session()
+    meta = session.get_execution_metadata()
+    assert meta.configured_primary_model == "gemini-3.7-flash"
+    assert meta.configured_fallback_model == "gemini-3.6-flash"
+    assert meta.startup_resolved_model is not None

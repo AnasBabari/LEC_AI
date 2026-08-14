@@ -520,13 +520,59 @@ class PolicyConfig(BaseModel):
             raise ValueError(f"Scoring weights must sum to 1.0, got {total}")
         return v
 
+    @field_validator("reliability_weights")
+    @classmethod
+    def validate_reliability_weights(cls, v: dict[str, int]) -> dict[str, int]:
+        required_keys = {"verified", "aggregated", "advisory"}
+        if set(v.keys()) != required_keys:
+            raise ValueError(f"reliability_weights must have exactly {required_keys}, got {set(v.keys())}")
+        for k, val in v.items():
+            if val < 0:
+                raise ValueError(f"reliability_weight '{k}' must be non-negative, got {val}")
+        return v
+
+    @field_validator("freshness_weights")
+    @classmethod
+    def validate_freshness_weights(cls, v: dict[str, int]) -> dict[str, int]:
+        required_keys = {"current", "recent", "stale"}
+        if set(v.keys()) != required_keys:
+            raise ValueError(f"freshness_weights must have exactly {required_keys}, got {set(v.keys())}")
+        for k, val in v.items():
+            if val < 0:
+                raise ValueError(f"freshness_weight '{k}' must be non-negative, got {val}")
+        return v
+
+    @field_validator("directness_weights")
+    @classmethod
+    def validate_directness_weights(cls, v: dict[str, int]) -> dict[str, int]:
+        required_keys = {"direct", "indirect", "contextual"}
+        if set(v.keys()) != required_keys:
+            raise ValueError(f"directness_weights must have exactly {required_keys}, got {set(v.keys())}")
+        for k, val in v.items():
+            if val < 0:
+                raise ValueError(f"directness_weight '{k}' must be non-negative, got {val}")
+        return v
+
+    @field_validator("freshness_thresholds_seconds")
+    @classmethod
+    def validate_freshness_thresholds(cls, v: dict[str, int]) -> dict[str, int]:
+        required_keys = {"current_max", "recent_max"}
+        if not required_keys.issubset(set(v.keys())):
+            raise ValueError(f"freshness_thresholds_seconds must contain {required_keys}, got {set(v.keys())}")
+        if v["current_max"] > v["recent_max"]:
+            raise ValueError(
+                f"current_max ({v['current_max']}) must be <= recent_max ({v['recent_max']})"
+            )
+        return v
+
     @field_validator("cause_catalogue")
     @classmethod
     def validate_cause_catalogue(cls, v: dict[str, CauseConfig]) -> dict[str, CauseConfig]:
-        allowed = {c.value for c in RootCauseCode}
-        for code in v:
-            if code not in allowed:
-                raise ValueError(f"Unknown root cause code in catalogue: '{code}'")
+        expected_causes = {c.value for c in RootCauseCode}
+        if set(v.keys()) != expected_causes:
+            missing = expected_causes - set(v.keys())
+            extra = set(v.keys()) - expected_causes
+            raise ValueError(f"cause_catalogue must contain full catalogue. Missing: {missing}, Extra: {extra}")
         return v
 
     @field_validator("strategies")
@@ -569,11 +615,15 @@ class ModelExecutionMetadata(BaseModel):
 
     configured_primary_model: str
     configured_fallback_model: Optional[str] = None
+    startup_resolved_model: Optional[str] = None
+    startup_resolution_status: Optional[str] = None
     model_used: str
     models_used: list[str] = Field(default_factory=list)
     thinking_level: str
     fallback_occurred: bool = False
     fallback_reason: Optional[str] = None
+    runtime_fallback_occurred: bool = False
+    runtime_fallback_reason: Optional[str] = None
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     call_trace: list[ModelCallTrace] = Field(default_factory=list)

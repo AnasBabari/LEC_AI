@@ -18,14 +18,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0
 
 # Install uv package manager
-COPY --from=ghcr.io/astral-sh/uv:0.5.24 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.6.14 /uv /bin/uv
 
-# Copy project files and source before install
+# Copy project definition, lockfile, and source
 COPY pyproject.toml README.md uv.lock ./
 COPY src/ /app/src/
 COPY data/ /app/data/
-# Install package and dependencies
-RUN uv pip install --system --no-cache -e .
+
+# Install package and dependencies strictly governed by uv.lock
+RUN uv sync --frozen --no-dev
 
 # Copy built frontend assets
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
@@ -33,6 +34,8 @@ COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 # Create and switch to non-root user
 RUN useradd -u 1000 -m appuser && chown -R appuser:appuser /app
 USER appuser
+
+ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
 

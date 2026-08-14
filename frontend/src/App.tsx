@@ -161,9 +161,19 @@ export const App: React.FC = () => {
               Fallback Active ({result.model_execution.model_used})
             </div>
           )}
-          <div className="badge badge-healthy">
-            <CheckCircle2 size={12} /> Ready
-          </div>
+          {!health ? (
+            <div className="badge badge-neutral">
+              <AlertTriangle size={12} /> Connecting...
+            </div>
+          ) : health.analysis_ready === false || health.status !== 'healthy' ? (
+            <div className="badge badge-failed">
+              <ShieldAlert size={12} /> Not Ready
+            </div>
+          ) : (
+            <div className="badge badge-healthy">
+              <CheckCircle2 size={12} /> Ready
+            </div>
+          )}
         </div>
       </header>
 
@@ -185,7 +195,7 @@ export const App: React.FC = () => {
         <button
           className="btn-primary"
           onClick={handleRunInvestigation}
-          disabled={loading}
+          disabled={loading || (health !== null && health.analysis_ready === false)}
         >
           {loading ? (
             <>

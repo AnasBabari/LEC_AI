@@ -40,16 +40,20 @@ jobs:
 
       - name: Install Python Dependencies
         run: |
-          uv pip install --system -e ".[dev]"
+          uv sync --frozen --all-extras
 
       - name: Run Ruff Linting
         run: |
-          ruff check src/ tests/
+          uv run ruff check src/ tests/
 
       - name: Run Mypy Type Checking
         run: |
-          mypy src/ tests/
+          uv run mypy src/ tests/
 
       - name: Run Pytest Test Suite
         run: |
-          pytest tests/ -v
+          uv run pytest -v
+
+      - name: Verify Docker Container Build
+        run: |
+          docker build -t faultline-ci .

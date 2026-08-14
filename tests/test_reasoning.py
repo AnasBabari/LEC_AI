@@ -1,5 +1,3 @@
-"""Unit tests for Evidence Ledger, Conflict Detection, Evidence Scoring, 4D Strategy Ranking, and Concurrency."""
-
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -14,12 +12,15 @@ from faultline.models import (
     EvidenceObservation,
     HealthDimension,
     HealthStatus,
+    HypothesisDraft,
+    HypothesisDraftSet,
     PolicyConfig,
     ReliabilityLevel,
+    RootCauseCode,
     SourceGroup,
 )
 from faultline.orchestrator import IncidentOrchestrator
-from faultline.reasoning import ConflictDetector, PolicyEngine
+from faultline.reasoning import ConflictDetector, EvidenceEvaluator, PolicyEngine
 
 
 def test_evidence_ledger_isolation_and_sequential_ids() -> None:
@@ -292,11 +293,8 @@ def test_concurrent_investigations_isolation() -> None:
 
 def test_hypothesis_draft_overlap_validation() -> None:
     """HypothesisDraft rejects duplicate citations or overlapping categories (supporting, opposing, contextual)."""
-    from pydantic import ValidationError as PydanticValidationError
-    from faultline.models import HypothesisDraft, RootCauseCode
-
     # Duplicate within supporting
-    with pytest.raises(PydanticValidationError, match=r"must not contain duplicate entries|Duplicate evidence"):
+    with pytest.raises(ValidationError, match=r"must not contain duplicate entries|Duplicate evidence"):
         HypothesisDraft(
             cause_code=RootCauseCode.TRAFFIC_SURGE,
             summary="test",
@@ -306,7 +304,7 @@ def test_hypothesis_draft_overlap_validation() -> None:
         )
 
     # Overlap between supporting and opposing
-    with pytest.raises(PydanticValidationError, match=r"cannot be simultaneously supporting and opposing|cannot appear in both"):
+    with pytest.raises(ValidationError, match=r"cannot be simultaneously supporting and opposing|cannot appear in both"):
         HypothesisDraft(
             cause_code=RootCauseCode.TRAFFIC_SURGE,
             summary="test",
@@ -316,7 +314,7 @@ def test_hypothesis_draft_overlap_validation() -> None:
         )
 
     # Overlap between supporting and contextual
-    with pytest.raises(PydanticValidationError, match=r"cannot be simultaneously contextual and supporting|cannot overlap"):
+    with pytest.raises(ValidationError, match=r"cannot be simultaneously contextual and supporting|cannot overlap"):
         HypothesisDraft(
             cause_code=RootCauseCode.TRAFFIC_SURGE,
             summary="test",
@@ -329,9 +327,6 @@ def test_hypothesis_draft_overlap_validation() -> None:
 
 def test_citation_category_semantic_verification() -> None:
     """EvidenceEvaluator validates citations strictly by policy match and allows contextual citations with 0 score impact."""
-    from faultline.models import HypothesisDraft, RootCauseCode
-    from faultline.reasoning import EvidenceEvaluator
-
     t0 = datetime(2026, 8, 13, 10, 0, 0, tzinfo=timezone.utc)
     ledger = EvidenceLedger(incident_at=t0)
 
@@ -410,8 +405,6 @@ def test_citation_category_semantic_verification() -> None:
 
 def test_orchestrator_semantic_repair_flow() -> None:
     """When the initial candidate draft fails citation validation, IncidentOrchestrator invokes repair_hypotheses."""
-    from faultline.gemini import FakeGeminiProvider
-    from faultline.models import HypothesisDraft, HypothesisDraftSet, RootCauseCode
 
     class FaultyInitialProvider(FakeGeminiProvider):
         def __init__(self) -> None:

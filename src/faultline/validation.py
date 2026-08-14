@@ -32,8 +32,8 @@ class ReportValidator:
 
     def validate(self, result: AnalysisResult) -> bool:
         """Validate complete AnalysisResult against all domain, deterministic authority, and safety invariants."""
-        # 1. Check lifecycle state
-        if result.state not in (LifecycleState.VALIDATED, LifecycleState.REPORTING, LifecycleState.VALIDATING):
+        # 1. Check lifecycle state (REPORTING is not an acceptable terminal or validation state)
+        if result.state not in (LifecycleState.VALIDATED, LifecycleState.VALIDATING):
             raise ValidationError(f"Invalid terminal lifecycle state: {result.state}")
 
         # 2. Check independent source group coverage (minimum 2 independent groups)
@@ -105,8 +105,10 @@ class ReportValidator:
         )
         auth_hyp_by_code = {h.cause_code: h for h in authoritative_hypotheses}
 
-        if not result.hypotheses:
-            raise ValidationError("Analysis report contains no evaluated hypotheses.")
+        if len(result.hypotheses) < 2:
+            raise ValidationError(
+                f"Analysis report must contain at least 2 evaluated hypotheses, found {len(result.hypotheses)}."
+            )
 
         allowed_cause_values = {c.value for c in RootCauseCode}
         has_positive_evidence = False
@@ -200,11 +202,17 @@ class ReportValidator:
                         f"Observation breakdown score mismatch for opposing evidence {obs_score.evidence_id} in {hyp.cause_code.value}."
                     )
 
-            # Verify contextual citations exist in ledger
+            # Verify contextual citations exist in ledger and do NOT match causal scoring rules
+            cause_rules = self.policy.cause_rules.get(hyp.cause_code, [])
             for ctx_id in hyp.contextual_evidence_ids:
                 if ctx_id not in ledger_id_set:
                     raise ValidationError(
                         f"Hypothesis {hyp.cause_code.value} cites non-existent contextual evidence ID: {ctx_id}"
+                    )
+                ctx_obs = reconstructed_ledger.get_by_id(ctx_id)
+                if ctx_obs and self.evaluator._match_rule(ctx_obs, cause_rules):
+                    raise ValidationError(
+                        f"Hypothesis {hyp.cause_code.value} cites causal evidence '{ctx_id}' as contextual."
                     )
 
         if not has_positive_evidence:
@@ -307,8 +315,8 @@ class ReportValidator:
             if ref_eid not in ledger_id_set:
                 raise ValidationError(f"Structured grounding references non-existent evidence ID: {ref_eid}")
 
-        if expected_conflict_ids and not (g.referenced_conflict_ids or g.reconciled_conflict_ids):
-            raise ValidationError("Structured grounding must reference at least one genuine conflict when conflicts exist.")
+        if expected_conflict_ids and not g.referenced_conflict_ids:
+            raise ValidationError("Structured grounding narrative must reference at least one genuine conflict when conflicts exist.")
 
         if g.alternative_strategy_id != alt_strategy.strategy_id:
             raise ValidationError(
