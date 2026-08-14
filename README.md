@@ -1,269 +1,364 @@
-# Faultline — Operational Incident Decision-Support Agent
+# Faultline — AI-Assisted Detective for Software Outages
 
-> **Rank competing repair strategies when diagnostics conflict.**  
-> Built for the LEC AI Engineering Intern assessment.
+> Faultline gathers conflicting clues about why a system broke, works out what probably went wrong, compares several possible repairs with different trade-offs, and ranks the safest one — without executing anything automatically.
 
 [![CI](https://github.com/AnasBabari/LEC_AI/actions/workflows/ci.yml/badge.svg)](https://github.com/AnasBabari/LEC_AI/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python&logoColor=white)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.111+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-19-61DAFB.svg?logo=react&logoColor=black)](https://react.dev)
 
+**Start here:** [What it solves](#what-problem-does-faultline-solve) · [Example investigation](#a-simple-example) · [Three possible repairs](#three-possible-repairs) · [Architecture](#how-faultline-works) · [Run it](#try-it-yourself) · [Inside Faultline](#inside-faultline)
+
 ---
 
-## 1. Executive Summary & Architecture
+## What problem does Faultline solve?
 
-Modern distributed systems rarely fail with single, unambiguous alarms. During major incidents, monitoring tools frequently present **contradictory signals**:
-- **Application workload telemetry** reports high database latency and connection pool exhaustion.
-- **Synthetic health probes** report the database engine is responding normally in 1.8ms.
-- **Message queue logs** reveal that a background cache-invalidation consumer crashed 18 minutes ago, creating a 42,000-message backlog and flooding the database with stale cache misses.
+Large websites depend on many parts working together: databases, caches, message queues, gateways. When something goes wrong, monitoring tools often give **conflicting clues**.
 
-The fastest or loudest fix (e.g. flushing the cache or failing over the database) is often disastrous: flushing the cache causes an immediate 100% cache stampede onto the strained database, while database failover risks replication data loss without fixing the stalled invalidation worker.
+One tool might say *"the database is overloaded."*
+Another might say *"the database is perfectly healthy."*
+A third might report *"a background worker has stopped."*
 
-**Faultline** solves this through a **hybrid agent architecture**:
-- **LLM Reasoning (Gemini 3.7 Flash Primary, Gemini 3.6 Flash Fallback)**: Gemini 3.7 Flash is the intended primary model with exact accessible API model IDs verified at startup via `client.models.list()`, and Gemini 3.6 Flash acting as the automatic verified fallback. The LLM adaptively selects which diagnostic tools to query, synthesizes candidate root causes from an allowed closed catalogue, and drafts written executive justifications defending trade-offs.
-- **Deterministic Python Core**: Enforces per-investigation evidence provenance (`EV-001`, `EV-002`, ...), deterministically classifies conflicts (*Direct Contradictions* vs. *Scope Tensions* vs. *Temporal Conflicts*), scores net evidence strength with per-source-group caps, calculates 4-dimensional strategy scores, and strictly validates all invariants before presenting recommendations to human operators.
+A human engineer now has to decide:
+
+- Which clues matter?
+- Which clues disagree, and why?
+- What actually caused the problem?
+- Which of several possible repairs is safest to try first?
+
+Faultline automates the investigation. It collects clues from independent sources, identifies where they conflict, scores possible causes against the evidence, compares competing repairs with different trade-offs, and ranks them — then hands everything to a human operator to decide what to do.
+
+> **Faultline recommends actions. It never executes them.**
+>
+> It can say *"restart this worker first,"* but it cannot press the button itself. A human must approve and perform any repair.
+
+---
+
+## A simple example
+
+### The website suddenly becomes slow
+
+A monitoring alert fires: *"API response times are spiking. The database looks overwhelmed."*
+
+Faultline investigates.
+
+**Clue 1 — The symptoms.**
+Website response times have jumped to 2400 ms. The database is handling a huge number of connections (92% of its capacity). The *cache* — a small shelf of frequently used information that lets the system answer common requests quickly — has dropped from 92% useful to just 34%.
+
+At first, the database looks guilty.
+
+**Clue 2 — A direct health check.**
+Faultline sends a direct test query to the database. It responds in 1.8 ms with low CPU usage.
+
+So the database engine itself is not broken. Something else is flooding it with work.
+
+**Clue 3 — The real culprit.**
+A *background worker* — a small program that quietly handles jobs behind the scenes — was responsible for keeping the cache up to date. It crashed 18 minutes ago. Since then, 42,000 pending update messages have piled up.
+
+**Clue 4 — The chain reaction.**
+Because the cache is stale, thousands of requests that would normally be answered instantly are being sent straight to the database instead. The database is healthy but overwhelmed by upstream failure.
+
+**The clues appear to disagree — but both are true.**
+The database can be healthy when tested directly while still being overwhelmed by thousands of real user requests. Faultline calls this kind of situation a *"scope tension"*: two measurements that seem contradictory because they are looking at different angles of the same component.
+
+---
+
+## Three possible repairs
+
+Faultline now has to choose between several plausible actions. Three stand out:
+
+| Choice | Why it looks attractive | Main problem | Result |
+|---|---|---|---|
+| **Restart the failed cache worker and drain its backlog** | Fixes the source of the stale cache | The backlog takes time to clear | **#1** |
+| **Temporarily slow down incoming traffic** | Quickly reduces pressure on the database and surrounding system | Treats the symptom rather than repairing the failed worker | **#2** |
+| **Flush and restart the cache** | Fastest action | Could create a cache stampede and worsen database load | **#3** |
+
+**The fastest repair is not the winner.** Faultline chooses the first option because it addresses the root cause while keeping operational risk acceptable.
+
+This is the central challenge Faultline is designed around: the most obvious repair is not always the best one. Restarting the cache is faster, and throttling traffic reduces pressure quickly, but recovering the failed worker is ranked first because it fixes the underlying cause with lower downstream risk.
+
+Faultline evaluates a full repair catalogue — `RECOVER_CONSUMER_AND_DRAIN`, `THROTTLE_TRAFFIC`, `RESTART_CACHE`, `REBUILD_DATABASE_INDEX`, `FAILOVER_DATABASE`. These three choices illustrate the most important trade-off in the main scenario.
+
+---
+
+## How Faultline works
 
 ```mermaid
-flowchart TD
-    subgraph UI ["Operator Interface"]
-        UI_Dash["React Dashboard / CLI\n(Synchronous request -> Timeline Replay)"]
-    end
+flowchart LR
+    Incident["Software<br/>incident"]
+    Investigate["Faultline<br/>investigates"]
+    Evidence["Clues are<br/>recorded"]
+    Cause["Python compares<br/>possible causes"]
 
-    subgraph API ["FastAPI Service Layer"]
-        API_Endpoints["/api/analyze & /api/scenarios"]
-        State_Machine["Lifecycle Orchestrator\n(RECEIVED -> COLLECTING -> RECONCILING -> HYPOTHESIZING -> SCORING -> REPORTING -> VALIDATING -> VALIDATED)"]
-    end
+    Compare["Compare repair<br/>choices"]
 
-    subgraph Tooling ["Diagnostic Execution (Bounded Loop)"]
-        Gemini_Selector["Gemini Tool Selector\n(Max 3 rounds, 8 attempts)"]
-        Tool_Telemetry["Workload Telemetry Tool"]
-        Tool_Probes["Synthetic Health Probe Tool"]
-        Tool_Events["Operational Events Tool"]
-    end
+    A["Recover worker<br/>fixes root cause"]
+    B["Throttle traffic<br/>fast relief"]
+    C["Restart cache<br/>fast but risky"]
 
-    subgraph DeterministicCore ["Deterministic Python Core"]
-        Ledger["Per-Investigation Evidence Ledger\n(Isolated EV-001..EV-xxx IDs, Immutable)"]
-        Conflict_Engine["Conflict Classifier\n(Direct Contradiction vs Scope Tension vs Temporal)"]
-        Cause_Evaluator["Evidence Strength & Net Scorer\n(Reliability + Freshness + Directness; Source-Group Cap)"]
-        Strategy_Ranker["4D Strategy Ranker\n(60% Impact, 20% Safety, 15% Speed, 5% Affordability)"]
-        Validator["Strict Report Validator\n(Provenance, Invariants, Ranking Consistency)"]
-    end
+    Rank["Python ranks<br/>the repairs"]
+    Validate["Python validates<br/>the result"]
+    Explain["Faultline explains<br/>the recommendation"]
+    Human["Human reviews<br/>& decides"]
 
-    subgraph LLM_Reasoning ["Gemini 3.6/3.7 Reasoning Layer"]
-        Hypothesis_Gen["Hypothesis Synthesis\n(Select from closed catalogue + cite EV-xxx IDs)"]
-        Decision_Explainer["Decision & Trade-off Justification\n(Defend winner vs faster/cheaper alternatives)"]
-    end
+    GeminiInv["Gemini AI<br/>helps investigate"]
+    GeminiExp["Gemini AI<br/>helps explain"]
+    Rules["Fixed scoring<br/>& safety rules"]
 
-    UI_Dash --> API_Endpoints
-    API_Endpoints --> State_Machine
-    State_Machine --> Gemini_Selector
-    Gemini_Selector --> Tool_Telemetry & Tool_Probes & Tool_Events
-    Tool_Telemetry & Tool_Probes & Tool_Events --> Ledger
-    Ledger --> Conflict_Engine
-    Conflict_Engine --> Hypothesis_Gen
-    Hypothesis_Gen --> Cause_Evaluator
-    Cause_Evaluator --> Strategy_Ranker
-    Strategy_Ranker --> Decision_Explainer
-    Decision_Explainer --> Validator
-    Validator --> API_Endpoints
-    API_Endpoints --> UI_Dash
+    Incident --> Investigate --> Evidence --> Cause --> Compare
+
+    Compare --> A
+    Compare --> B
+    Compare --> C
+
+    A --> Rank
+    B --> Rank
+    C --> Rank
+
+    Rank --> Validate --> Explain --> Human
+
+    GeminiInv -.-> Investigate
+    GeminiExp -.-> Explain
+
+    Rules --> Cause
+    Rules --> Rank
+    Rules --> Validate
 ```
 
----
+The solid arrows show the trusted decision path: investigate, record evidence, compare possible causes, **compare several competing repairs**, rank them by their trade-offs, validate the result, and explain it to a human — who makes the final decision. Gemini assists with investigation and explanation (dotted arrows), while deterministic Python owns evidence recording, conflict detection, scoring, ranking, and validation, guided by fixed scoring and safety rules. The process stops at a human operator — Faultline never executes a repair automatically.
 
-## 2. Canonical Incident Walkthrough (`cache_invalidation_lag`)
-
-### Initial Fault Alert
-- **Alert**: Spiking API Gateway p99 response times (2400ms) & database connection pool saturation (92%).
-- **Loudest Symptom**: Database appears overwhelmed.
-
-### Multi-Source Diagnostic Investigation
-1. **Telemetry (`query_telemetry`)**:
-   - `[EV-001]` API Gateway p99 latency: 2400ms (`degraded`)
-   - `[EV-002]` Database connection pool saturation: 92% (`degraded`)
-   - `[EV-003]` Cache hit ratio collapsed from 92% to 34.2% (`degraded`)
-2. **Health Probes (`run_health_probes`)**:
-   - `[EV-004]` Database synthetic direct probe (SELECT 1 & indexed query): 1.8ms, CPU 18% (`healthy`)
-   - `[EV-005]` Cache cluster TCP ping: 0.5ms (`healthy`)
-   - `[EV-006]` Gateway health endpoint: HTTP 200 in 2.1ms (`healthy`)
-3. **Operational Events (`fetch_operational_events`)**:
-   - `[EV-007]` Message queue invalidation consumer heartbeat lost at $T - 18\text{m}$ (OOM crash) (`failed`)
-   - `[EV-008]` Invalidation queue backlog: 42,850 accumulated messages (`failed`)
-   - `[EV-009]` Cache stale mutation divergence: 28,400 stale keys (`degraded`)
-
-### Conflict Classification: Scope Tension vs Direct Contradiction
-- **The Conflict**: `[EV-002]` (DB Workload connection saturation) vs `[EV-004]` (DB Synthetic probe).
-- **Classification**: `SCOPE_TENSION`.
-- **Operational Insight**: Both monitoring systems are telling the truth within their respective measurement scopes. Direct synthetic queries respond in 1.8ms with low CPU, proving the database engine is healthy. However, the database is saturated under workload because the stalled invalidation worker caused a 65.8% cache miss cascade directly to the database tier.
+> The diagram highlights three representative choices from the canonical incident. Faultline evaluates the full repair catalogue before producing its ranking.
 
 ---
 
-## 3. Evidence Scoring & 4D Strategy Ranking Algorithms
+## Inside Faultline
 
-### Evidence-Strength Scoring
-Each observation contributes to a candidate cause based on:
-$$\text{Observation Strength} = \text{Reliability} + \text{Freshness} + \text{Directness}$$
-- **Reliability**: Verified direct probe / kernel event ($+3$), Aggregated metric ($+2$), Advisory log ($+1$).
-- **Freshness (relative to incident time)**: Current $\le 5\text{m}$ ($+2$), Recent $\le 30\text{m}$ ($+1$), Stale ($0$).
-- **Directness**: Direct causal indicator ($+3$), Indirect symptom ($+2$), Contextual ($+1$).
+### AI investigates, Python decides
 
-#### Per-Source-Group Cap (Anti-Correlation Guard)
-To prevent 10 correlated telemetry metrics from numerically drowning out an independent health probe, **only the strongest supporting and strongest opposing observation per source group contributes numerically**. Additional metrics corroborate visually but do not inflate score totals.
+Faultline pairs Gemini AI with deterministic Python code, with clearly separated jobs.
 
-$$\text{Net Evidence} = \max(0, \text{Support} - \text{Opposition})$$
-$$\text{Policy Decision Weight} = \frac{\text{Net Evidence}}{\sum \text{Positive Net Evidence}} \times 100 \quad \text{(*Policy-derived weight, not an empirical probability)}$$
+Gemini helps decide:
 
-#### Evaluated Causes for Canonical Incident
-| Cause Code | Supporting Observations | Opposing Observations | Net Score | Decision Weight | Strength Band |
-| :--- | :--- | :--- | :---: | :---: | :---: |
-| `CACHE_INVALIDATION_CONSUMER_STALLED` | Telemetry (+6), Events (+8) | None (0) | **14.0** | **73.7%** | **STRONG** |
-| `TRAFFIC_SURGE` | Telemetry (+5) | None (0) | **5.0** | **26.3%** | **WEAK** |
-| `DATABASE_CAPACITY_DEGRADATION` | Telemetry (+6) | Health Probe (-8) | **0.0** | **0.0%** | **UNSUPPORTED** |
-| `CACHE_NODE_FAILURE` | None (0) | Health Probe (-8) | **0.0** | **0.0%** | **UNSUPPORTED** |
+- which diagnostics to inspect;
+- which allowed root causes are worth investigating;
+- how to explain the result to a human.
+
+Python owns:
+
+- evidence IDs;
+- whether evidence actually exists;
+- whether evidence actually supports a cause;
+- conflict classification;
+- numeric scores;
+- strategy ranking;
+- safety checks;
+- final validation.
+
+> Gemini assists with reasoning, but deterministic Python owns decision authority.
+
+Here, *deterministic* simply means that the same evidence and the same fixed rules produce the same numerical result. Every run over the same data produces identical scores and rankings.
+
+### How clues are scored
+
+A clue becomes stronger when it is:
+
+- trustworthy;
+- recent;
+- directly related to the suspected problem.
+
+```text
+Evidence Strength =
+Reliability + Freshness + Directness
+```
+
+| Part | What it measures | Values |
+| :--- | :--- | :--- |
+| **Reliability** | How trustworthy the source is | Verified (3) · Aggregated (2) · Advisory (1) |
+| **Freshness** | How close in time to the incident | Current (2) · Recent (1) · Stale (0) |
+| **Directness** | How directly it connects to the cause | Direct (3) · Indirect (2) · Contextual (1) |
+
+### The source-group cap
+
+Ten measurements produced by the same monitoring system should not automatically count like ten independent opinions. Ten people repeating the same rumour are not the same as ten independent witnesses.
+
+Faultline therefore limits how much evidence from the same source group can contribute to the numerical score — the `source-group cap`. Additional correlated measurements are still recorded as clues, but they cannot inflate a cause's score.
+
+### Support vs opposition
+
+```text
+Net Evidence =
+max(0, Support - Opposition)
+```
+
+Evidence supporting a cause increases its score. Evidence contradicting that cause reduces it. If the opposition becomes stronger than the support, Faultline treats that cause as having zero usable evidence rather than a negative score.
+
+### Decision weights
+
+Decision weights are policy-derived ratios, not probabilities. In the canonical incident, 73.7% of the positive policy-weighted evidence points toward the stalled cache-invalidation worker. That describes how the evidence is split between candidate causes — it is not a claim that the cause is "73.7% likely" to be right.
+
+### How repairs are ranked
+
+Each repair is judged on four questions:
+
+1. Will it solve the real problem? *(Impact)*
+2. Is it safe? *(Safety)*
+3. How quickly can it help? *(Speed)*
+4. How expensive or difficult is it? *(Cost)*
+
+| Factor | Weight |
+| :--- | ---: |
+| Impact | 60% |
+| Safety | 20% |
+| Speed | 15% |
+| Cost | 5% |
+
+Impact receives the largest weight because a very fast repair for the wrong problem is still the wrong repair.
+
+### Why the canonical ranking lands as it does
+
+**Restart the failed cache worker and drain its backlog — #1.** It wins because it addresses the root cause, is backed by strong evidence for a stalled consumer, avoids destructive cache behaviour, and carries reasonable operational safety.
+
+**Temporarily slow down incoming traffic — #2.** It is useful because it reduces immediate system pressure, is relatively safe, and fairly fast. It loses because it does not repair the stalled worker, and the workload returns once throttling is removed.
+
+**Flush and restart the cache — #3.** It is attractive because it is the fastest option. It loses because it does not repair the consumer, it discards useful cached data, and an empty cache can send a request stampede against an already-strained database.
+
+### Report validation
+
+Faultline does not trust its own generated report simply because the pipeline produced it. Before returning an answer, Python checks again:
+
+- evidence references;
+- cause scores;
+- repair calculations;
+- ranking order;
+- safety flags.
+
+If the structured result disagrees with the fixed rules, the report is rejected. This gate lives in `ReportValidator` (`src/faultline/validation.py`).
+
+### Model setup
+
+Primary: `gemini-3.7-flash` · Fallback: `gemini-3.6-flash`.
+
+If the preferred Gemini model becomes unavailable, Faultline can use the fallback for that investigation without changing the model state of other investigations.
+
+Offline mode replaces Gemini with deterministic test behaviour, so the full pipeline can run in CI without credentials.
+
+### Testing
+
+```bash
+uv run pytest -v
+uv run ruff check src/ tests/
+uv run mypy src/ tests/
+cd frontend && npm run verify
+docker build -t faultline .
+```
+
+GitHub Actions runs the verification suite automatically on pushes to `main`.
 
 ---
 
-### 4-Dimensional Strategy Ranking
-$$\text{Final Score} = 0.60 \times \text{Expected Impact} + 0.20 \times \text{Safety} + 0.15 \times \text{Speed} + 0.05 \times \text{Affordability}$$
+## Safety
 
-| Rank | Strategy ID | Strategy Name | Impact (60%) | Safety (20%) | Speed (15%) | Cost (5%) | Final Score | Suggested Action Command |
-| :---: | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **#1** | `RECOVER_CONSUMER_AND_DRAIN` | Restart Invalidation Consumer & Drain Backlog | **73.7** | **75.0** | 50.0 | 75.0 | **70.46** | `kubectl rollout restart deployment/cache-invalidation-worker -n services && redis-cli info` |
-| **#2** | `THROTTLE_TRAFFIC` | Apply API Gateway Rate Limiting & Load Shedding | 63.2 | 75.0 | 75.0 | 75.0 | **67.89** | `kubectl patch ingress/api-gateway -n ingress --type merge -p '{"spec":{"rateLimit":{"requestsPerSecond":500}}}'` |
-| **#3** | `RESTART_CACHE` | Flush & Restart Cache Cluster | 18.4 | 25.0 | **100.0** | **100.0** | **36.05** | `redis-cli flushall && systemctl restart redis-server` |
-| **#4** | `REBUILD_DATABASE_INDEX` | Rebuild Missing Database Index Concurrently | 0.0 | 75.0 | 50.0 | 75.0 | **26.25** | `psql -c "CREATE INDEX CONCURRENTLY idx_orders_customer_created ON orders (customer_id, created_at);"` |
-| **#5** | `FAILOVER_DATABASE` | Trigger Database Replica Failover | 0.0 | 25.0 | 50.0 | 25.0 | **13.75** | `patronictl failover main-db-cluster --candidate db-replica-01 --force` |
+Faultline's most important safety rule is simple:
 
-### Defensible Written Trade-Off Justification
-- **Why #1 beats #3 (`RESTART_CACHE`)**: Although flushing the cache is the fastest (Speed: 100) and cheapest (Cost: 100) option, it ranks #3 because it leaves the stalled consumer untouched and triggers a catastrophic 100% cache stampede onto an already saturated database.
-- **Why #1 beats #5 (`FAILOVER_DATABASE`)**: Database failover fails to address the root cause, incurs DNS transition downtime, and risks data loss.
-- **Winner**: `RECOVER_CONSUMER_AND_DRAIN` directly addresses the root cause with high safety and complete reversibility.
+> **It never executes repairs.**
+>
+> `execution_status = "not_executed"` · `operator_approval_required = True`
+
+Suggested commands (like `kubectl rollout restart ...`) are display-only illustrations. There is no code in Faultline that runs shell commands, calls subprocess, or executes repairs. A human operator must review the recommendation and act on it independently.
 
 ---
 
-## 4. Defending Key Engineering Decisions
+## What you can see in the dashboard
 
-1. **Why is Faultline an agent?**  
-   Diagnostic investigation is not a hard-coded sequence. The agent adaptively decides what tool to query next based on interim observations.
-2. **Why does Python control scoring, ranking, and validation?**  
-   Safety-critical decisions in operations must be repeatable, testable, and auditable. Python guarantees deterministic mathematical scoring and strict invariant validation.
-3. **Why one agent instead of multi-agent orchestration?**  
-   Incident investigation requires one accountable decision-maker. Multiple agents introduce coordination latency, state synchronization overhead, and nondeterministic drift.
-4. **Why no RAG / vector databases?**  
-   Incident diagnostics are ephemeral runtime observations. Embedding static docs does not solve dynamic root-cause isolation.
-5. **Why an immutable, per-investigation Evidence Ledger?**  
-   Assigns stable sequential IDs (`EV-001`, `EV-002`, ...) fresh per run, preventing hallucinations and cross-run ID pollution.
-6. **Why distinguish Scope Tension from Direct Contradiction?**  
-   A synthetic probe executing a `SELECT 1` in 1.8ms and an application workload experiencing 185ms queries are both accurate within their respective measurement scopes.
-7. **Why cap evidence by source group?**  
-   Correlated metrics (e.g. 10 latency histograms) must not overpower independent probes merely through sheer volume.
-8. **Why four scoring dimensions (Impact, Safety, Speed, Cost)?**  
-   Expected Impact dominates (60%) because a fast fix for the wrong cause is useless. Safety comes second (20%) because remediation must not worsen the outage.
-9. **Why synchronous API + client-side timeline replay instead of streaming (SSE)?**  
-   Synchronous `POST /api/analyze` is deadline-safe and robust, avoiding SSE reconnect issues and partial parsing bugs while preserving complete timeline playback.
-10. **Why verify models at startup with 3.7 primary and 3.6 fallback?**  
-    Gemini 3.7 Flash is the intended primary reasoning model. Because API account model availability can vary during rollout, Faultline queries `client.models.list()` once at startup to discover the exact accessible 3.7 identifier without guessing pricing anchors, seamlessly falling back to `gemini-3.6-flash` if unavailable. Probing once at startup caches availability cleanly without per-request latency.
-11. **Why medium thinking level?**  
-    `thinking_level="medium"` provides the optimal balance of reasoning depth and low latency for live operational decision support.
-12. **Why anchor freshness to incident timestamp?**  
-    Anchoring to `scenario.incident_at` guarantees 100% reproducible tests today, next week, or next year.
-13. **Why explicit operator approval?**  
-    `operator_approval_required=True` and `execution_status="not_executed"` ensure no unverified automated mutations occur.
+Faultline includes a React web dashboard that shows:
+
+- the initial incident alert;
+- a step-by-step investigation timeline;
+- all collected evidence with source, status, and values;
+- conflicting clues and how they are resolved;
+- scored root-cause hypotheses;
+- ranked repair strategies with scores;
+- a written explanation defending the recommendation;
+- operator safety status.
 
 ---
 
-## 5. Quickstart & Installation
+## Try it yourself
 
 ### Prerequisites
-- Python 3.11+ (or `uv`)
-- Node.js 20+ (for frontend dashboard)
-- (Optional) `GEMINI_API_KEY` for live LLM reasoning (runs fully deterministic in offline mode without an API key).
 
-### Option A: Local Python & React Setup
+- Python 3.11+ (with [`uv`](https://docs.astral.sh/uv/) package manager)
+- Node.js 20+ (for the frontend dashboard)
+- *(Optional)* `GEMINI_API_KEY` for live AI reasoning — runs fully deterministic in offline mode without a key
+
+### Local setup
+
 ```bash
-# 1. Clone the repository
+# Clone the repository
 git clone https://github.com/AnasBabari/LEC_AI.git
 cd LEC_AI
 
-# 2. Install locked dependencies with uv
+# Install locked Python dependencies
 uv sync --frozen --all-extras
 
-# 3. (Optional) Configure Gemini API key for live mode
-cp .env.example .env
-# Edit .env and set GEMINI_API_KEY=... (runs in deterministic offline mode if omitted)
-
-# 4. Run CLI analysis directly (offline deterministic mode)
+# Run an offline analysis from the command line
 uv run faultline analyze --offline --scenario cache_invalidation_lag
 
-# 5. Start Backend API Server
+# Start the backend API server
 uv run uvicorn faultline.app:app --host 0.0.0.0 --port 8000
 
-# 6. In a separate terminal, start React Frontend
-cd frontend
-npm ci
-npm run dev
-# Open http://localhost:5173 in browser
+# In a separate terminal, start the React frontend
+cd frontend && npm ci && npm run dev
+# Open http://localhost:5173
 ```
 
-### Option B: Docker Container
+### Docker
+
 ```bash
-# Build unified multi-stage Docker container
 docker build -t faultline .
-
-# Run container (frontend + backend unified on port 8000)
-docker run -p 8000:8000 -e GEMINI_API_KEY="your-api-key-optional" faultline
-
-# Open http://localhost:8000 in your browser
+docker run -p 8000:8000 -e GEMINI_API_KEY="your-key-optional" faultline
+# Open http://localhost:8000
 ```
 
 ---
 
-## 6. Testing & Quality Verification
+## Limits of this demo
 
-Backend and frontend test suites, static analysis and production builds run in CI. A live Gemini smoke test is opt-in because it requires external credentials and provider quota.
+Faultline is a working decision-support prototype, not a production control plane.
 
-```bash
-# Run backend test suite
-uv run pytest -v
+- Diagnostic sources are deterministic scenario simulators, not live Prometheus, database, cache, or queue integrations.
+- Repair commands are illustrative strings. They are never executed.
+- Evidence and strategy weights are explicit policy choices, not learned probabilities or guarantees of recovery.
+- Gemini is optional. Offline mode makes the full workflow reproducible for assessment and CI.
+- Structured claims are checked, but a human operator must still review the written explanation and approve any real-world action.
 
-# Run linting check
-uv run ruff check src/ tests/
-
-# Run static type checking
-uv run mypy src/ tests/
-
-# Run frontend type checking, linter, and unit tests
-cd frontend && npm ci && npm run verify
-
-# Build production frontend bundle
-npm run build
-```
+These boundaries are deliberate: the assessment focuses on reasoning through conflicting diagnostics and defending a repair ranking.
 
 ---
 
-## 7. Scenarios & Future Extensions
+## Scenarios
 
-Faultline includes tested scenarios out-of-the-box:
-- **`data/scenarios/cache_invalidation_lag.json`**: Canonical incident with stalled invalidation consumer, 42,000-message backlog, and scope tension between direct DB health probes and saturated workload connections.
-- **`data/scenarios/index_regression.json`**: Database synthetic ping responds healthy (<2ms), but query workload experiences heavy table scans following an unindexed schema migration. Faultline deterministically ranks `REBUILD_DATABASE_INDEX` as the #1 repair strategy.
+Faultline includes two tested scenarios:
 
-### What I Would Build Next:
-- **Dynamic Scenario Generator**: Real-time chaos engineering simulator generating synthetic network partitions, memory leaks, and replica lag.
-- **Automated Post-Mortem Exporter**: Markdown incident post-mortems exported automatically to GitHub issues or incident response repositories.
-- **Dynamic Multi-Cluster Telemetry Ingestion**: Direct Prometheus / OpenTelemetry OTLP receiver adapter.
+- **`cache_invalidation_lag`** — The canonical incident described above. Winner: `RECOVER_CONSUMER_AND_DRAIN` (restart the failed cache worker and drain its backlog).
+- **`index_regression`** — A software update accidentally removes a database index — a structure that helps the database find information quickly. The database itself remains healthy, but real application queries become much slower. Faultline recommends rebuilding the missing index: `REBUILD_DATABASE_INDEX`.
 
----
+### What I would build next
 
-## 8. AI Assistance Disclosure
-
-AI tools, including Gemini 3.7 Flash High via Antigravity, assisted with planning, implementation, code review, debugging, testing and iteration. I reviewed and tested the shipped architecture, deterministic scoring policy, evidence-validation boundaries and safety constraints, and can explain and defend the resulting implementation and its trade-offs.
+- Dynamic scenario generator using synthetic chaos engineering faults.
+- Automated post-mortem exporter to Markdown or GitHub Issues.
+- Direct Prometheus / OpenTelemetry OTLP telemetry ingestion.
 
 ---
 
-## 9. Demonstration & Repository Links
+## AI assistance disclosure
 
-- **Repository**: [https://github.com/AnasBabari/LEC_AI](https://github.com/AnasBabari/LEC_AI) *(Public)*
-- **Interactive UI Dashboard**: Available locally at `http://localhost:5173` or in Docker at `http://localhost:8000`.
-- **Reference Analysis Output**: Available at [`examples/canonical-report.offline.json`](examples/canonical-report.offline.json).
+AI tools, including Gemini 3.7 Flash High via Antigravity, assisted with planning, implementation, code review, debugging, testing, and iteration. I reviewed and tested the shipped architecture, deterministic scoring policy, evidence-validation boundaries, and safety constraints, and can explain and defend the resulting implementation and its trade-offs.
 
+---
+
+## Links
+
+- **Repository:** [github.com/AnasBabari/LEC_AI](https://github.com/AnasBabari/LEC_AI)
+- **Dashboard:** `http://localhost:5173` (local) or `http://localhost:8000` (Docker)
+- **Reference output:** [`examples/canonical-report.offline.json`](examples/canonical-report.offline.json)
