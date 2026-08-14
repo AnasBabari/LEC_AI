@@ -557,8 +557,15 @@ class GeminiProvider:
 
         try:
             from google import genai
+            from google.genai import types
 
-            self._client = genai.Client(api_key=self.api_key)
+            self._client = genai.Client(
+                api_key=self.api_key,
+                http_options=types.HttpOptions(
+                    api_version="v1beta",
+                    timeout=int(self.request_timeout_seconds * 1000),
+                ),
+            )
 
             # Probe available models once on startup
             available_model_names: list[str] = []
@@ -614,7 +621,10 @@ class GeminiProvider:
             except Exception:
                 pass
 
-        http_options = types.HttpOptions(timeout=self.request_timeout_seconds)
+        http_options = types.HttpOptions(
+            api_version="v1beta",
+            timeout=int(self.request_timeout_seconds * 1000),
+        )
 
         return types.GenerateContentConfig(
             response_mime_type="application/json",

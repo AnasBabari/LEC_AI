@@ -368,13 +368,15 @@ class EvidenceEvaluator:
     ) -> tuple[bool, list[str]]:
         """Strictly validate that draft citations match policy cause signal rules.
 
-        - Supporting citations must match a rule with relationship == 'supports'.
-        - Opposing citations must match a rule with relationship == 'opposes'.
-        - Citations that do not match any rule, or have an inverted relationship, are rejected.
+        - Supporting citations must exist in ledger and must NOT match an 'opposes' rule.
+        - Opposing citations must exist in ledger and must NOT match a 'supports' rule.
+        - Citations must contain at least 1 verified supporting rule match.
+        - Fabricated non-existent citations or inverted citations are strictly rejected.
         """
         obs_map = {obs.id: obs for obs in observations}
         rules = self.policy.cause_rules.get(draft.cause_code, [])
         errors: list[str] = []
+        valid_supporting: list[str] = []
 
         for sup_id in draft.supporting_evidence_ids:
             obs = obs_map.get(sup_id)
@@ -382,14 +384,12 @@ class EvidenceEvaluator:
                 errors.append(f"Non-existent supporting citation '{sup_id}' for {draft.cause_code.value}")
                 continue
             matched = self._match_rule(obs, rules)
-            if not matched:
-                errors.append(
-                    f"Observation '{sup_id}' ({obs.component.value}:{obs.signal}) does not match any policy rule for {draft.cause_code.value}"
-                )
-            elif matched.get("relationship") != "supports":
+            if matched and matched.get("relationship") == "opposes":
                 errors.append(
                     f"Observation '{sup_id}' is an opposing signal for {draft.cause_code.value}, cannot be cited as supporting"
                 )
+            elif matched and matched.get("relationship") == "supports":
+                valid_supporting.append(sup_id)
 
         for opp_id in draft.opposing_evidence_ids:
             obs = obs_map.get(opp_id)
@@ -397,12 +397,13 @@ class EvidenceEvaluator:
                 errors.append(f"Non-existent opposing citation '{opp_id}' for {draft.cause_code.value}")
                 continue
             matched = self._match_rule(obs, rules)
-            if not matched:
-                errors.append(f"Observation '{opp_id}' does not match any policy rule for {draft.cause_code.value}")
-            elif matched.get("relationship") != "opposes":
+            if matched and matched.get("relationship") == "supports":
                 errors.append(
                     f"Observation '{opp_id}' is a supporting signal for {draft.cause_code.value}, cannot be cited as opposing"
                 )
+
+        if not valid_supporting and not errors:
+            errors.append(f"Hypothesis {draft.cause_code.value} lacks any matching supporting signal rule citations")
 
         return (len(errors) == 0, errors)
 

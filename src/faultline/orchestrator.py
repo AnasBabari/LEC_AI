@@ -74,7 +74,7 @@ class IncidentOrchestrator:
         policy: Optional[PolicyEngine] = None,
         scenario_repo: Optional[ScenarioRepository] = None,
         max_rounds: int = 3,
-        max_tool_attempts: int = 5,
+        max_tool_attempts: int = 8,
         analysis_deadline_seconds: float = 90.0,
     ) -> None:
         self.policy = policy or PolicyEngine()
@@ -218,15 +218,6 @@ class IncidentOrchestrator:
                     },
                 )
 
-                # Check if agent deemed collection complete
-                if action_batch.investigation_complete and len(ledger.successful_source_groups) >= 3:
-                    record_trace(
-                        round_idx,
-                        "collection_complete",
-                        "Agent concluded multi-source evidence collection is sufficient across all domains.",
-                    )
-                    break
-
                 # Execute tool calls requested by agent
                 for tool_call in action_batch.tool_calls:
                     if total_tool_attempts >= self.max_tool_attempts:
@@ -238,7 +229,6 @@ class IncidentOrchestrator:
 
                     tool_sig = f"{tool_name_str}:{comp_str}:{dim_str}"
                     if tool_sig in executed_tool_signatures:
-                        total_tool_attempts += 1
                         record_trace(
                             round_idx,
                             "duplicate_suppression",
@@ -255,15 +245,21 @@ class IncidentOrchestrator:
                         call_args["dimension"] = tool_call.dimension
                     execute_tool(tool_name_str, call_args, round_idx)
 
-                # Missing source recovery: check ledger.successful_source_groups, not simply tool signatures
-                if round_idx == self.max_rounds and len(ledger.successful_source_groups) < 3:
-                    missing_groups = {SourceGroup.TELEMETRY, SourceGroup.HEALTH_PROBE, SourceGroup.OPERATIONAL_EVENTS} - ledger.successful_source_groups
-                    for missing_group in missing_groups:
-                        if total_tool_attempts >= self.max_tool_attempts:
-                            break
-                        broad_tool = SOURCE_GROUP_TO_TOOL[missing_group]
-                        executed_tool_signatures.add(f"{broad_tool.value}:None:None")
-                        execute_tool(broad_tool.value, {}, round_idx)
+                # Check if agent deemed collection complete
+                if action_batch.investigation_complete and len(ledger.successful_source_groups) >= 3:
+                    record_trace(
+                        round_idx,
+                        "collection_complete",
+                        "Agent concluded multi-source evidence collection is sufficient across all domains.",
+                    )
+                    break
+
+            # Missing source recovery: ensure coverage across all 3 source groups
+            if len(ledger.successful_source_groups) < 3:
+                missing_groups = {SourceGroup.TELEMETRY, SourceGroup.HEALTH_PROBE, SourceGroup.OPERATIONAL_EVENTS} - ledger.successful_source_groups
+                for missing_group in missing_groups:
+                    broad_tool = SOURCE_GROUP_TO_TOOL[missing_group]
+                    execute_tool(broad_tool.value, {}, self.max_rounds)
 
             if len(ledger.successful_source_groups) < 2:
                 raise InsufficientEvidenceError(

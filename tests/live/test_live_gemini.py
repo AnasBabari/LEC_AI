@@ -3,15 +3,21 @@
 import os
 
 import pytest
+from dotenv import load_dotenv
 
 from faultline.gemini import GeminiProvider
 from faultline.models import LifecycleState
 from faultline.orchestrator import IncidentOrchestrator
 
+load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+RUN_LIVE_TESTS = os.getenv("RUN_LIVE_TESTS", "").lower() in ("true", "1", "yes")
 
 
-@pytest.mark.skipif(not GEMINI_API_KEY, reason="GEMINI_API_KEY not configured; skipping live Gemini API test.")
+@pytest.mark.skipif(
+    not GEMINI_API_KEY or not RUN_LIVE_TESTS,
+    reason="Live Gemini test skipped (enable by setting RUN_LIVE_TESTS=true and GEMINI_API_KEY).",
+)
 def test_live_gemini_investigation() -> None:
     """Run live investigation against Google Gemini API and verify report passes all deterministic validation invariants."""
     provider = GeminiProvider(api_key=GEMINI_API_KEY)
