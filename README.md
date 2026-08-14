@@ -186,28 +186,22 @@ $$\text{Final Score} = 0.60 \times \text{Expected Impact} + 0.20 \times \text{Sa
 git clone https://github.com/AnasBabari/LEC_AI.git
 cd LEC_AI
 
-# 2. Set up Python virtual environment with uv
-uv venv .venv
-# On Windows:
-.venv\Scripts\activate
-# On Linux/macOS:
-source .venv/bin/activate
+# 2. Install locked dependencies with uv
+uv sync --frozen --all-extras
 
-uv pip install -e ".[dev]"
-
-# 3. (Optional) Configure Gemini API key
+# 3. (Optional) Configure Gemini API key for live mode
 cp .env.example .env
-# Edit .env and set GEMINI_API_KEY=...
+# Edit .env and set GEMINI_API_KEY=... (runs in deterministic offline mode if omitted)
 
 # 4. Run CLI analysis directly (offline deterministic mode)
 uv run faultline analyze --offline --scenario cache_invalidation_lag
 
 # 5. Start Backend API Server
-uvicorn faultline.app:app --host 0.0.0.0 --port 8000
+uv run uvicorn faultline.app:app --host 0.0.0.0 --port 8000
 
 # 6. In a separate terminal, start React Frontend
 cd frontend
-npm install
+npm ci
 npm run dev
 # Open http://localhost:5173 in browser
 ```
@@ -227,21 +221,23 @@ docker run -p 8000:8000 -e GEMINI_API_KEY="your-api-key-optional" faultline
 
 ## 6. Testing & Quality Verification
 
+Backend and frontend test suites, static analysis and production builds run in CI. A live Gemini smoke test is opt-in because it requires external credentials and provider quota.
+
 ```bash
-# Run all unit and integration tests (69 offline tests, 100% passing)
-pytest tests/ -v
+# Run backend test suite
+uv run pytest -v
 
 # Run linting check
-ruff check src/ tests/
+uv run ruff check src/ tests/
 
 # Run static type checking
-mypy src/ tests/
+uv run mypy src/ tests/
 
-# Run frontend typechecking and tests (5 tests, 100% passing)
-cd frontend && npm run verify
+# Run frontend type checking, linter, and unit tests
+cd frontend && npm ci && npm run verify
 
 # Build production frontend bundle
-cd frontend && npm run build
+npm run build
 ```
 
 ---
@@ -261,7 +257,7 @@ Faultline includes tested scenarios out-of-the-box:
 
 ## 8. AI Assistance Disclosure
 
-In accordance with LEC AI's guidelines, modern AI developer tooling (Gemini 3.7 Flash High via Antigravity) was utilized to assist in scaffolding boilerplate, drafting Pydantic schemas, and accelerating UI styling. All architectural decisions, mathematical scoring algorithms, invariant validations, and safety boundaries were designed, reviewed, and defended by the author.
+AI tools, including Gemini 3.7 Flash High via Antigravity, assisted with planning, implementation, code review, debugging, testing and iteration. I reviewed and tested the shipped architecture, deterministic scoring policy, evidence-validation boundaries and safety constraints, and can explain and defend the resulting implementation and its trade-offs.
 
 ---
 
