@@ -288,3 +288,166 @@ def test_concurrent_investigations_isolation() -> None:
     # Ensure all run IDs are strictly unique
     assert len(run_ids) == 10
     assert len(set(run_ids)) == 10
+
+
+def test_hypothesis_draft_overlap_validation() -> None:
+    """HypothesisDraft rejects duplicate citations or overlapping categories (supporting, opposing, contextual)."""
+    from pydantic import ValidationError as PydanticValidationError
+    from faultline.models import HypothesisDraft, RootCauseCode
+
+    # Duplicate within supporting
+    with pytest.raises(PydanticValidationError, match=r"must not contain duplicate entries|Duplicate evidence"):
+        HypothesisDraft(
+            cause_code=RootCauseCode.TRAFFIC_SURGE,
+            summary="test",
+            causal_chain=["a", "b"],
+            supporting_evidence_ids=["EV-001", "EV-001"],
+            opposing_evidence_ids=[],
+        )
+
+    # Overlap between supporting and opposing
+    with pytest.raises(PydanticValidationError, match=r"cannot be simultaneously supporting and opposing|cannot appear in both"):
+        HypothesisDraft(
+            cause_code=RootCauseCode.TRAFFIC_SURGE,
+            summary="test",
+            causal_chain=["a", "b"],
+            supporting_evidence_ids=["EV-001"],
+            opposing_evidence_ids=["EV-001"],
+        )
+
+    # Overlap between supporting and contextual
+    with pytest.raises(PydanticValidationError, match=r"cannot be simultaneously contextual and supporting|cannot overlap"):
+        HypothesisDraft(
+            cause_code=RootCauseCode.TRAFFIC_SURGE,
+            summary="test",
+            causal_chain=["a", "b"],
+            supporting_evidence_ids=["EV-001"],
+            opposing_evidence_ids=[],
+            contextual_evidence_ids=["EV-001"],
+        )
+
+
+def test_citation_category_semantic_verification() -> None:
+    """EvidenceEvaluator validates citations strictly by policy match and allows contextual citations with 0 score impact."""
+    from faultline.models import HypothesisDraft, RootCauseCode
+    from faultline.reasoning import EvidenceEvaluator
+
+    t0 = datetime(2026, 8, 13, 10, 0, 0, tzinfo=timezone.utc)
+    ledger = EvidenceLedger(incident_at=t0)
+
+    # EV-001: API gateway throughput degraded (matches TRAFFIC_SURGE supports)
+    obs1 = ledger.append_observation(
+        source_group=SourceGroup.TELEMETRY,
+        source="query_telemetry",
+        component=ComponentEnum.API_GATEWAY,
+        signal="p99_latency",
+        dimension=HealthDimension.LATENCY,
+        status=HealthStatus.DEGRADED,
+        value=2000.0,
+        unit="ms",
+        observed_at=t0,
+        window_duration_seconds=300,
+        scope="workload",
+        reliability=ReliabilityLevel.AGGREGATED,
+        details="Gateway degraded",
+    )
+
+    # EV-002: Message queue backlog failed (matches CACHE_INVALIDATION_CONSUMER_STALLED supports)
+    obs2 = ledger.append_observation(
+        source_group=SourceGroup.OPERATIONAL_EVENTS,
+        source="fetch_events",
+        component=ComponentEnum.MESSAGE_QUEUE,
+        signal="queue_backlog",
+        dimension=HealthDimension.BACKLOG,
+        status=HealthStatus.FAILED,
+        value=50000.0,
+        unit="msgs",
+        observed_at=t0,
+        window_duration_seconds=300,
+        scope="queue",
+        reliability=ReliabilityLevel.VERIFIED,
+        details="Queue stalled",
+    )
+
+    evaluator = EvidenceEvaluator()
+
+    # Draft citing EV-002 (queue) as supporting DATABASE_INDEX_REGRESSION -> REJECTED (unrelated signal)
+    draft_unrelated = HypothesisDraft(
+        cause_code=RootCauseCode.DATABASE_INDEX_REGRESSION,
+        summary="DB index regression",
+        causal_chain=["Step 1", "Step 2"],
+        supporting_evidence_ids=[obs2.id],
+        opposing_evidence_ids=[],
+    )
+    is_valid, errs = evaluator.validate_hypothesis_citations(draft_unrelated, ledger.get_observations())
+    assert is_valid is False
+    assert any("does not match any SUPPORTS rule" in e for e in errs)
+
+    # Draft citing EV-002 as contextual evidence for TRAFFIC_SURGE -> ACCEPTED with 0 score impact
+    draft_contextual = HypothesisDraft(
+        cause_code=RootCauseCode.TRAFFIC_SURGE,
+        summary="Traffic surge",
+        causal_chain=["Step 1", "Step 2"],
+        supporting_evidence_ids=[obs1.id],
+        opposing_evidence_ids=[],
+        contextual_evidence_ids=[obs2.id],
+    )
+    is_valid_ctx, errs_ctx = evaluator.validate_hypothesis_citations(draft_contextual, ledger.get_observations())
+    assert is_valid_ctx is True
+    assert len(errs_ctx) == 0
+
+    evaluated = evaluator.evaluate_hypotheses(
+        candidate_codes=[RootCauseCode.TRAFFIC_SURGE],
+        ledger=ledger,
+        draft_hypotheses=[draft_contextual],
+    )
+    assert len(evaluated) == 1
+    # Check that EV-002 was not added to supporting or opposing observations (0 score impact)
+    ev_ids_in_scores = {s.evidence_id for s in evaluated[0].supporting_observations}
+    assert obs2.id not in ev_ids_in_scores
+    assert evaluated[0].contextual_evidence_ids == [obs2.id]
+
+
+def test_orchestrator_semantic_repair_flow() -> None:
+    """When the initial candidate draft fails citation validation, IncidentOrchestrator invokes repair_hypotheses."""
+    from faultline.gemini import FakeGeminiProvider
+    from faultline.models import HypothesisDraft, HypothesisDraftSet, RootCauseCode
+
+    class FaultyInitialProvider(FakeGeminiProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.repair_called = False
+
+        def synthesise_hypotheses(self, incident, evidence_ledger, allowed_causes, session=None):
+            # Return 2 drafts: 1 with invalid citation, 1 with valid citation -> leaves only 1 valid draft (<2) and triggers repair!
+            return HypothesisDraftSet(
+                hypotheses=[
+                    HypothesisDraft(
+                        cause_code=RootCauseCode.DATABASE_INDEX_REGRESSION,
+                        summary="Invalid citation",
+                        causal_chain=["a", "b"],
+                        supporting_evidence_ids=["EV-999"],  # Non-existent
+                        opposing_evidence_ids=[],
+                    ),
+                    HypothesisDraft(
+                        cause_code=RootCauseCode.TRAFFIC_SURGE,
+                        summary="Valid secondary draft",
+                        causal_chain=["c", "d"],
+                        supporting_evidence_ids=["EV-001"],
+                        opposing_evidence_ids=[],
+                    ),
+                ]
+            )
+
+        def repair_hypotheses(self, incident, evidence_ledger, allowed_causes, previous_drafts, validation_errors, session=None):
+            self.repair_called = True
+            # Return valid drafts on repair
+            return super().synthesise_hypotheses(incident, evidence_ledger, allowed_causes, session=session)
+
+    provider = FaultyInitialProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    assert provider.repair_called is True
+    assert result.validation_passed is True
+

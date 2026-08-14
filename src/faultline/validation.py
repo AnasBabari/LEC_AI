@@ -149,7 +149,12 @@ class ReportValidator:
             if hyp.net_evidence_score > 0:
                 has_positive_evidence = True
 
-            # Verify observation breakdown match (Finding 12)
+            # Verify observation breakdown match (Finding 12 & Finding 27: complete set comparison)
+            if len(hyp.supporting_observations) != len(auth_hyp.supporting_observations):
+                raise ValidationError(
+                    f"Hypothesis {hyp.cause_code.value} supporting observations count mismatch: "
+                    f"reported {len(hyp.supporting_observations)}, expected {len(auth_hyp.supporting_observations)}."
+                )
             auth_sup_by_id = {s.evidence_id: s for s in auth_hyp.supporting_observations}
             for obs_score in hyp.supporting_observations:
                 if obs_score.evidence_id not in auth_sup_by_id:
@@ -162,6 +167,7 @@ class ReportValidator:
                     or obs_score.freshness_score != auth_score.freshness_score
                     or obs_score.directness_score != auth_score.directness_score
                     or obs_score.total_strength != auth_score.total_strength
+                    or obs_score.relationship != auth_score.relationship
                     or obs_score.is_dominant != auth_score.is_dominant
                     or obs_score.excluded_by_source_cap != auth_score.excluded_by_source_cap
                 ):
@@ -169,6 +175,11 @@ class ReportValidator:
                         f"Observation breakdown score mismatch for evidence {obs_score.evidence_id} in {hyp.cause_code.value}."
                     )
 
+            if len(hyp.opposing_observations) != len(auth_hyp.opposing_observations):
+                raise ValidationError(
+                    f"Hypothesis {hyp.cause_code.value} opposing observations count mismatch: "
+                    f"reported {len(hyp.opposing_observations)}, expected {len(auth_hyp.opposing_observations)}."
+                )
             auth_opp_by_id = {s.evidence_id: s for s in auth_hyp.opposing_observations}
             for obs_score in hyp.opposing_observations:
                 if obs_score.evidence_id not in auth_opp_by_id:
@@ -181,11 +192,19 @@ class ReportValidator:
                     or obs_score.freshness_score != auth_score.freshness_score
                     or obs_score.directness_score != auth_score.directness_score
                     or obs_score.total_strength != auth_score.total_strength
+                    or obs_score.relationship != auth_score.relationship
                     or obs_score.is_dominant != auth_score.is_dominant
                     or obs_score.excluded_by_source_cap != auth_score.excluded_by_source_cap
                 ):
                     raise ValidationError(
                         f"Observation breakdown score mismatch for opposing evidence {obs_score.evidence_id} in {hyp.cause_code.value}."
+                    )
+
+            # Verify contextual citations exist in ledger
+            for ctx_id in hyp.contextual_evidence_ids:
+                if ctx_id not in ledger_id_set:
+                    raise ValidationError(
+                        f"Hypothesis {hyp.cause_code.value} cites non-existent contextual evidence ID: {ctx_id}"
                     )
 
         if not has_positive_evidence:
@@ -278,6 +297,18 @@ class ReportValidator:
             raise ValidationError(
                 f"Structured grounding reconciled evidence IDs mismatch: {g.reconciled_evidence_ids} vs {expected_conflict_ev_ids}."
             )
+
+        # Validate structured narrative references (Finding 29)
+        for ref_cid in g.referenced_conflict_ids:
+            if ref_cid not in expected_conflict_ids:
+                raise ValidationError(f"Structured grounding references non-existent conflict ID: {ref_cid}")
+
+        for ref_eid in g.referenced_evidence_ids:
+            if ref_eid not in ledger_id_set:
+                raise ValidationError(f"Structured grounding references non-existent evidence ID: {ref_eid}")
+
+        if expected_conflict_ids and not (g.referenced_conflict_ids or g.reconciled_conflict_ids):
+            raise ValidationError("Structured grounding must reference at least one genuine conflict when conflicts exist.")
 
         if g.alternative_strategy_id != alt_strategy.strategy_id:
             raise ValidationError(

@@ -228,7 +228,7 @@ docker run -p 8000:8000 -e GEMINI_API_KEY="your-api-key-optional" faultline
 ## 6. Testing & Quality Verification
 
 ```bash
-# Run all unit and integration tests (55 tests, 100% passing)
+# Run all unit and integration tests (62 tests, 100% passing)
 pytest tests/ -v
 
 # Run linting check

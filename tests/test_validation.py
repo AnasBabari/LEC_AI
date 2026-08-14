@@ -344,7 +344,7 @@ def test_validator_rejects_inverted_supporting_opposing_citation() -> None:
     result.hypotheses[0].supporting_observations.append(inverted_score)
 
     validator = ReportValidator()
-    with pytest.raises(ValidationError, match=r"reports unexpected supporting evidence|policy defines it as (opposes|unrelated)"):
+    with pytest.raises(ValidationError, match=r"reports unexpected supporting evidence|policy defines it as (opposes|unrelated)|supporting observations count mismatch"):
         validator.validate(result)
 
 
@@ -369,10 +369,9 @@ def test_validator_rejects_fabricated_hypothesis_scores_and_winner_override() ->
     orchestrator = IncidentOrchestrator(provider=provider)
     result = orchestrator.analyze_scenario("cache_invalidation_lag")
 
-    # Adversarial tampering: inflate database capacity degradation score to 100
-    for hyp in result.hypotheses:
-        if hyp.cause_code == RootCauseCode.DATABASE_CAPACITY_DEGRADATION:
-            hyp.net_evidence_score = 100.0
+    # Adversarial tampering: inflate top hypothesis score to 100.0
+    assert len(result.hypotheses) > 0
+    result.hypotheses[0].net_evidence_score = 100.0
 
     validator = ReportValidator()
     with pytest.raises(ValidationError, match="mismatch: reported 100.0, expected authoritative score"):
@@ -536,4 +535,81 @@ def test_validator_rejects_fewer_than_two_hypotheses() -> None:
     validator = ReportValidator()
     with pytest.raises(ValidationError, match="contains no evaluated hypotheses"):
         validator.validate(result)
+
+
+def test_validator_rejects_omitted_breakdown_observation() -> None:
+    """Validator rejects report if any authoritative observation is omitted from hypothesis breakdown."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    # Tamper: remove 1 supporting observation from top hypothesis
+    assert len(result.hypotheses[0].supporting_observations) > 1
+    result.hypotheses[0].supporting_observations = result.hypotheses[0].supporting_observations[:-1]
+
+    validator = ReportValidator()
+    with pytest.raises(ValidationError, match="supporting observations count mismatch"):
+        validator.validate(result)
+
+
+def test_state_machine_transition_trace_from_to_states() -> None:
+    """Trace items for state transitions accurately capture distinct from_state and to_state."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    state_transitions = [
+        item for item in result.investigation_trace
+        if item.action_type == "state_change" and "from_state" in item.details
+    ]
+    assert len(state_transitions) >= 5
+
+    for trans in state_transitions:
+        from_st = trans.details["from_state"]
+        to_st = trans.details["to_state"]
+        assert from_st != to_st, f"State change trace recorded identical from and to state: {from_st} -> {to_st}"
+
+
+def test_validator_rejects_hallucinated_referenced_conflict_id() -> None:
+    """Validator rejects StructuredDecisionGrounding referencing a non-existent conflict ID."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    assert result.recommendation.grounding is not None
+    result.recommendation.grounding.referenced_conflict_ids = ["CONF-999"]
+
+    validator = ReportValidator()
+    with pytest.raises(ValidationError, match="references non-existent conflict ID"):
+        validator.validate(result)
+
+
+def test_validator_rejects_hallucinated_referenced_evidence_id() -> None:
+    """Validator rejects StructuredDecisionGrounding referencing a non-existent evidence ID."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    assert result.recommendation.grounding is not None
+    result.recommendation.grounding.referenced_evidence_ids = ["EV-999"]
+
+    validator = ReportValidator()
+    with pytest.raises(ValidationError, match="references non-existent evidence ID"):
+        validator.validate(result)
+
+
+def test_tool_deduplication_accounting_in_trace() -> None:
+    """Investigation trace logs records_returned, records_appended, and records_deduplicated for all tool executions."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    tool_traces = [item for item in result.investigation_trace if item.action_type == "tool_result"]
+    assert len(tool_traces) >= 2
+    for tt in tool_traces:
+        assert "records_returned" in tt.details
+        assert "records_appended" in tt.details
+        assert "records_deduplicated" in tt.details
+        assert tt.details["records_returned"] >= tt.details["records_appended"]
+
 

@@ -419,6 +419,12 @@ export const App: React.FC = () => {
                       {hyp.supporting_observations.map((s) => s.evidence_id).join(', ') || 'None'} |{' '}
                       <strong>Opposing:</strong>{' '}
                       {hyp.opposing_observations.map((o) => o.evidence_id).join(', ') || 'None'}
+                      {hyp.contextual_evidence_ids && hyp.contextual_evidence_ids.length > 0 && (
+                        <>
+                          {' | '}
+                          <strong>Contextual:</strong> {hyp.contextual_evidence_ids.join(', ')}
+                        </>
+                      )}
                     </div>
 
                     {/* Expandable Evidence Score Breakdown */}

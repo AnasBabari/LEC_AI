@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class SourceGroup(str, Enum):
@@ -186,9 +186,44 @@ class HypothesisDraft(BaseModel):
     causal_chain: list[str] = Field(
         ..., description="Step-by-step causal chain explaining how root cause led to observed symptoms"
     )
-    supporting_evidence_ids: list[str] = Field(default_factory=list)
-    opposing_evidence_ids: list[str] = Field(default_factory=list)
+    supporting_evidence_ids: list[str] = Field(
+        default_factory=list, description="IDs of observations that strictly match policy SUPPORTS signal rules"
+    )
+    opposing_evidence_ids: list[str] = Field(
+        default_factory=list, description="IDs of observations that strictly match policy OPPOSES signal rules"
+    )
+    contextual_evidence_ids: list[str] = Field(
+        default_factory=list,
+        description="IDs of observations in the ledger providing context without affecting numeric cause score",
+    )
     unresolved_uncertainties: list[str] = Field(default_factory=list)
+
+    @field_validator("supporting_evidence_ids", "opposing_evidence_ids", "contextual_evidence_ids")
+    @classmethod
+    def validate_no_duplicate_ids(cls, v: list[str]) -> list[str]:
+        if len(v) != len(set(v)):
+            raise ValueError("Evidence ID lists must not contain duplicate entries.")
+        return v
+
+    @model_validator(mode="after")
+    def validate_no_cross_category_conflicts(self) -> "HypothesisDraft":
+        sup_set = set(self.supporting_evidence_ids)
+        opp_set = set(self.opposing_evidence_ids)
+        ctx_set = set(self.contextual_evidence_ids)
+
+        overlap_sup_opp = sup_set & opp_set
+        if overlap_sup_opp:
+            raise ValueError(f"Evidence IDs cannot be simultaneously supporting and opposing: {sorted(overlap_sup_opp)}")
+
+        overlap_ctx_sup = ctx_set & sup_set
+        if overlap_ctx_sup:
+            raise ValueError(f"Evidence IDs cannot be simultaneously contextual and supporting: {sorted(overlap_ctx_sup)}")
+
+        overlap_ctx_opp = ctx_set & opp_set
+        if overlap_ctx_opp:
+            raise ValueError(f"Evidence IDs cannot be simultaneously contextual and opposing: {sorted(overlap_ctx_opp)}")
+
+        return self
 
 
 class HypothesisDraftSet(BaseModel):
@@ -235,6 +270,8 @@ class StructuredDecisionGrounding(BaseModel):
     top_cause_code: RootCauseCode
     reconciled_conflict_ids: list[str] = Field(default_factory=list)
     reconciled_evidence_ids: list[str] = Field(default_factory=list)
+    referenced_conflict_ids: list[str] = Field(default_factory=list)
+    referenced_evidence_ids: list[str] = Field(default_factory=list)
     alternative_strategy_id: str
     alternative_strategy_name: str
     alternative_advantage_dimension: AdvantageDimension
@@ -254,10 +291,10 @@ class DecisionNarrativeDraft(BaseModel):
     )
     remaining_uncertainties: list[str] = Field(default_factory=list)
     referenced_conflict_ids: list[str] = Field(
-        default_factory=list, description="Optional list of conflict IDs explicitly discussed in narrative"
+        default_factory=list, description="List of conflict IDs explicitly discussed in narrative (e.g. ['CONF-001'])"
     )
     referenced_evidence_ids: list[str] = Field(
-        default_factory=list, description="Optional list of evidence IDs explicitly discussed in narrative"
+        default_factory=list, description="List of evidence IDs explicitly discussed in narrative (e.g. ['EV-002', 'EV-003'])"
     )
 
 
@@ -312,6 +349,7 @@ class EvaluatedHypothesis(BaseModel):
     causal_chain: list[str]
     supporting_observations: list[ObservationEvidenceScore]
     opposing_observations: list[ObservationEvidenceScore]
+    contextual_evidence_ids: list[str] = Field(default_factory=list)
     supporting_score: float
     opposing_score: float
     net_evidence_score: float

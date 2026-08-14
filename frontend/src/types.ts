@@ -61,6 +61,7 @@ export interface EvaluatedHypothesis {
   causal_chain: string[];
   supporting_observations: ObservationEvidenceScore[];
   opposing_observations: ObservationEvidenceScore[];
+  contextual_evidence_ids?: string[];
   supporting_score: number;
   opposing_score: number;
   net_evidence_score: number;
@@ -98,6 +99,8 @@ export interface StructuredDecisionGrounding {
   top_cause_code: RootCauseCode;
   reconciled_conflict_ids: string[];
   reconciled_evidence_ids: string[];
+  referenced_conflict_ids?: string[];
+  referenced_evidence_ids?: string[];
   alternative_strategy_id: string;
   alternative_strategy_name: string;
   alternative_advantage_dimension: string;
@@ -124,15 +127,25 @@ export interface InvestigationTraceItem {
   details: Record<string, any>;
 }
 
+export interface ModelCallTrace {
+  task: string;
+  model: string;
+  fallback_used?: boolean;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+}
+
 export interface ModelExecutionMetadata {
   configured_primary_model: string;
   configured_fallback_model?: string;
   model_used: string;
+  models_used?: string[];
   thinking_level: string;
   fallback_occurred: boolean;
   fallback_reason?: string;
   prompt_tokens?: number;
   completion_tokens?: number;
+  call_trace?: ModelCallTrace[];
 }
 
 export interface ExecutionSafetySection {
@@ -177,6 +190,7 @@ export interface HealthResponse {
   status: string;
   service: string;
   version: string;
+  analysis_ready?: boolean;
   gemini_configured: boolean;
   provider_mode?: string;
   runtime_model: string;

@@ -93,10 +93,13 @@ def health_check() -> dict[str, Any]:
     ) if provider else "offline"
     mode = "live_gemini" if (api_key_configured and isinstance(provider, GeminiProvider)) else "deterministic_fake"
 
+    analysis_ready = (mode == "deterministic_fake") or (model_resolution_status in ("verified", "fallback_active"))
+
     return {
         "status": "healthy",
         "service": "faultline",
         "version": "0.1.0",
+        "analysis_ready": analysis_ready,
         "gemini_configured": api_key_configured,
         "provider_mode": mode,
         "runtime_model": model_name,
@@ -130,6 +133,11 @@ def analyze_incident(req: AnalyzeRequest) -> AnalysisResult:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Upstream model request invalid: {mre}",
         ) from mre
+    except (InsufficientEvidenceError, InvalidModelOutputError) as val_err:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Analysis validation error: {val_err}",
+        ) from val_err
     except (ModelAuthenticationError, ModelUnavailableError) as mue:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -140,10 +148,15 @@ def analyze_incident(req: AnalyzeRequest) -> AnalysisResult:
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail=f"Analysis timed out: {ate}",
         ) from ate
-    except (ValidationError, OrchestratorError, InvalidModelOutputError, InsufficientEvidenceError) as ve:
+    except OrchestratorError as oe:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Orchestration engine failure: {oe}",
+        ) from oe
+    except ValidationError as ve:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Analysis failed domain validation: {ve}",
+            detail=f"Final report validation failed: {ve}",
         ) from ve
     except Exception as e:
         error_id = f"ERR-{uuid.uuid4().hex[:8].upper()}"

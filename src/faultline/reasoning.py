@@ -190,8 +190,8 @@ class ConflictDetector:
 class EvidenceEvaluator:
     """Deterministically calculates evidence strength, net support, and decision weights."""
 
-    def __init__(self, policy: PolicyEngine) -> None:
-        self.policy = policy
+    def __init__(self, policy: Optional[PolicyEngine] = None) -> None:
+        self.policy = policy or PolicyEngine()
 
     def evaluate_hypotheses(
         self,
@@ -281,6 +281,7 @@ class EvidenceEvaluator:
                 if draft
                 else [f"Remaining uncertainty regarding exact propagation dynamics of {cause_def['name']}."]
             )
+            contextual_ids_val = draft.contextual_evidence_ids if draft else []
 
             temp_evaluations.append(
                 {
@@ -290,6 +291,7 @@ class EvidenceEvaluator:
                     "causal_chain": causal_chain_val,
                     "supporting_observations": supporting_scored,
                     "opposing_observations": opposing_scored,
+                    "contextual_evidence_ids": contextual_ids_val,
                     "supporting_score": float(support_total),
                     "opposing_score": float(oppose_total),
                     "net_evidence_score": net_score,
@@ -331,6 +333,7 @@ class EvidenceEvaluator:
                     causal_chain=temp["causal_chain"],
                     supporting_observations=temp["supporting_observations"],
                     opposing_observations=temp["opposing_observations"],
+                    contextual_evidence_ids=temp["contextual_evidence_ids"],
                     supporting_score=temp["supporting_score"],
                     opposing_score=temp["opposing_score"],
                     net_evidence_score=net,
@@ -366,42 +369,68 @@ class EvidenceEvaluator:
         draft: HypothesisDraft,
         observations: list[EvidenceObservation],
     ) -> tuple[bool, list[str]]:
-        """Strictly validate that draft citations match policy cause signal rules.
+        """Strictly validate that draft citations match policy cause signal rules across all 3 categories.
 
-        - Supporting citations must exist in ledger and must NOT match an 'opposes' rule.
-        - Opposing citations must exist in ledger and must NOT match a 'supports' rule.
-        - Citations must contain at least 1 verified supporting rule match.
-        - Fabricated non-existent citations or inverted citations are strictly rejected.
+        1. supporting_evidence_ids:
+           - Must exist in current ledger.
+           - Must match a policy signal rule for this RootCauseCode with relationship == 'supports'.
+           - Non-matching or opposing observations are rejected (must be moved to contextual_evidence_ids or removed).
+        2. opposing_evidence_ids:
+           - Must exist in current ledger.
+           - Must match a policy signal rule for this RootCauseCode with relationship == 'opposes'.
+           - Non-matching or supporting observations are rejected.
+        3. contextual_evidence_ids:
+           - Must exist in current ledger.
+           - Provides narrative context without impacting numerical cause scoring.
+        4. Invariant:
+           - Must have at least 1 verified supporting citation matching a SUPPORTS policy rule.
         """
         obs_map = {obs.id: obs for obs in observations}
         rules = self.policy.cause_rules.get(draft.cause_code, [])
         errors: list[str] = []
         valid_supporting: list[str] = []
 
+        # 1. Validate supporting citations
         for sup_id in draft.supporting_evidence_ids:
             obs = obs_map.get(sup_id)
             if not obs:
                 errors.append(f"Non-existent supporting citation '{sup_id}' for {draft.cause_code.value}")
                 continue
             matched = self._match_rule(obs, rules)
-            if matched and matched.get("relationship") == "opposes":
+            if not matched:
+                errors.append(
+                    f"Observation '{sup_id}' ({obs.component.value}:{obs.signal}) does not match any SUPPORTS rule for {draft.cause_code.value}. Place in contextual_evidence_ids if relevant."
+                )
+            elif matched.get("relationship") != "supports":
                 errors.append(
                     f"Observation '{sup_id}' is an opposing signal for {draft.cause_code.value}, cannot be cited as supporting"
                 )
-            elif matched and matched.get("relationship") == "supports":
+            else:
                 valid_supporting.append(sup_id)
 
+        # 2. Validate opposing citations
         for opp_id in draft.opposing_evidence_ids:
             obs = obs_map.get(opp_id)
             if not obs:
                 errors.append(f"Non-existent opposing citation '{opp_id}' for {draft.cause_code.value}")
                 continue
             matched = self._match_rule(obs, rules)
-            if matched and matched.get("relationship") == "supports":
+            if not matched:
+                errors.append(
+                    f"Observation '{opp_id}' ({obs.component.value}:{obs.signal}) does not match any OPPOSES rule for {draft.cause_code.value}"
+                )
+            elif matched.get("relationship") != "opposes":
                 errors.append(
                     f"Observation '{opp_id}' is a supporting signal for {draft.cause_code.value}, cannot be cited as opposing"
                 )
 
+        # 3. Validate contextual citations
+        for ctx_id in draft.contextual_evidence_ids:
+            obs = obs_map.get(ctx_id)
+            if not obs:
+                errors.append(f"Non-existent contextual citation '{ctx_id}' for {draft.cause_code.value}")
+
+        # 4. Require at least one verified supporting citation
         if not valid_supporting and not errors:
             errors.append(f"Hypothesis {draft.cause_code.value} lacks any matching supporting signal rule citations")
 
