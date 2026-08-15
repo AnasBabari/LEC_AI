@@ -18,11 +18,15 @@ export async function fetchScenarios(): Promise<ScenarioMetadata[]> {
   return res.json();
 }
 
-export async function analyzeScenario(scenarioId: string): Promise<AnalysisResult> {
+export async function analyzeScenario(
+  scenarioId: string,
+  signal?: AbortSignal
+): Promise<AnalysisResult> {
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ scenario_id: scenarioId }),
+    signal,
   });
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({ detail: res.statusText }));

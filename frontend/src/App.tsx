@@ -24,6 +24,7 @@ import { HypothesesInspector } from './components/HypothesesInspector';
 import { StrategyMatrix } from './components/StrategyMatrix';
 import { EvidenceLedger } from './components/EvidenceLedger';
 import { DiagnosticSplashScreen } from './components/DiagnosticSplashScreen';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 export type DashboardTab = 'overview' | 'causes' | 'repair' | 'timeline' | 'evidence';
 
@@ -46,6 +47,7 @@ export const App: React.FC = () => {
 
   const evidenceLedgerRef = useRef<HTMLDivElement>(null);
   const tabButtonRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Initial bootstrap function
   const bootstrapApp = async () => {
@@ -77,9 +79,16 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     bootstrapApp();
+    return () => {
+      abortControllerRef.current?.abort();
+    };
   }, []);
 
   const handleScenarioChange = (newId: string) => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
     setSelectedScenarioId(newId);
     setResult(null); // Clear stale results on scenario switch (required by system test invariants)
     setError(null);
@@ -89,21 +98,33 @@ export const App: React.FC = () => {
   };
 
   const handleRunInvestigation = async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setLoading(true);
     setError(null);
     setResult(null);
     setIsReplaying(false);
     setSelectedEvidenceId(null);
     try {
-      const data = await analyzeScenario(selectedScenarioId);
+      const data = await analyzeScenario(selectedScenarioId, controller.signal);
       setResult(data);
       setReplayIndex(data.investigation_trace.length); // Show full timeline by default
       setActiveTab('overview');
     } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return; // Intentionally cancelled by user action
+      }
       const msg = err instanceof Error ? err.message : 'Investigation failed';
       setError(msg);
     } finally {
-      setLoading(false);
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+        setLoading(false);
+      }
     }
   };
 
@@ -148,18 +169,21 @@ export const App: React.FC = () => {
     }
   };
 
-  // Replay timer effect
+  // Replay timer effect with speed multiplier
+  const [replaySpeed, setReplaySpeed] = useState<number>(1);
+
   useEffect(() => {
     if (!isReplaying || !result) return;
     if (replayIndex >= result.investigation_trace.length) {
       setIsReplaying(false);
       return;
     }
+    const delay = Math.max(200, Math.round(550 / replaySpeed));
     const timer = setTimeout(() => {
       setReplayIndex((prev) => prev + 1);
-    }, 550);
+    }, delay);
     return () => clearTimeout(timer);
-  }, [isReplaying, replayIndex, result]);
+  }, [isReplaying, replayIndex, result, replaySpeed]);
 
   const tabsList: { id: DashboardTab; label: string; icon: React.FC<{ size?: number }>; count?: number }[] = [
     { id: 'overview', label: 'Overview', icon: FileText },
@@ -270,133 +294,137 @@ export const App: React.FC = () => {
 
       {/* Active Verified Investigation Results (Multi-Tab Dashboard) */}
       {result && (
-        <main className="dashboard-main-view" aria-label="Investigation Dashboard">
-          {/* Dashboard Tab Navigation Bar */}
-          <div className="dashboard-tabs-bar" role="tablist" aria-label="Incident Investigation Sections">
-            {tabsList.map((tab, idx) => {
-              const Icon = tab.icon;
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  ref={(el) => { tabButtonRefs.current[idx] = el; }}
-                  id={`tab-btn-${tab.id}`}
-                  className={`dashboard-tab-btn ${isActive ? 'tab-active' : ''}`}
-                  role="tab"
-                  aria-selected={isActive}
-                  aria-controls={`tab-panel-${tab.id}`}
-                  tabIndex={isActive ? 0 : -1}
-                  onClick={() => setActiveTab(tab.id)}
-                  onKeyDown={(e) => handleTabKeyDown(e, tab.id)}
-                >
-                  <Icon size={14} />
-                  <span>{tab.label}</span>
-                  {tab.count !== undefined && (
-                    <span className="tab-badge font-mono">{tab.count}</span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* TAB 1: Summary & Action */}
-          {activeTab === 'overview' && (
-            <div
-              id="tab-panel-overview"
-              role="tabpanel"
-              aria-labelledby="tab-btn-overview"
-              className="tab-panel"
-            >
-              <OverviewSummary
-                result={result}
-                onNavigateTab={(tab) => {
-                  setActiveTab(tab);
-                  const tabIndex = tabsList.findIndex((t) => t.id === tab);
-                  if (tabIndex >= 0) {
-                    tabButtonRefs.current[tabIndex]?.focus();
-                  }
-                }}
-                onSelectEvidence={handleSelectEvidence}
-              />
+        <ErrorBoundary fallbackTitle="Dashboard Display Error">
+          <main className="dashboard-main-view" aria-label="Investigation Dashboard">
+            {/* Dashboard Tab Navigation Bar */}
+            <div className="dashboard-tabs-bar" role="tablist" aria-label="Incident Investigation Sections">
+              {tabsList.map((tab, idx) => {
+                const Icon = tab.icon;
+                const isActive = activeTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    ref={(el) => { tabButtonRefs.current[idx] = el; }}
+                    id={`tab-btn-${tab.id}`}
+                    className={`dashboard-tab-btn ${isActive ? 'tab-active' : ''}`}
+                    role="tab"
+                    aria-selected={isActive}
+                    aria-controls={`tab-panel-${tab.id}`}
+                    tabIndex={isActive ? 0 : -1}
+                    onClick={() => setActiveTab(tab.id)}
+                    onKeyDown={(e) => handleTabKeyDown(e, tab.id)}
+                  >
+                    <Icon size={14} />
+                    <span>{tab.label}</span>
+                    {tab.count !== undefined && (
+                      <span className="tab-badge font-mono">{tab.count}</span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
-          )}
 
-          {/* TAB 2: Possible Causes & Contradictions */}
-          {activeTab === 'causes' && (
-            <div
-              id="tab-panel-causes"
-              role="tabpanel"
-              aria-labelledby="tab-btn-causes"
-              className="tab-panel"
-            >
-              <div className="causes-flow">
-                <HypothesesInspector
-                  hypotheses={result.hypotheses}
-                  onSelectEvidence={handleSelectEvidence}
-                />
-                <ScopeTensionsPanel
-                  conflicts={result.conflicts}
-                  evidenceList={result.evidence}
+            {/* TAB 1: Summary & Action */}
+            {activeTab === 'overview' && (
+              <div
+                id="tab-panel-overview"
+                role="tabpanel"
+                aria-labelledby="tab-btn-overview"
+                className="tab-panel"
+              >
+                <OverviewSummary
+                  result={result}
+                  onNavigateTab={(tab) => {
+                    setActiveTab(tab);
+                    const tabIndex = tabsList.findIndex((t) => t.id === tab);
+                    if (tabIndex >= 0) {
+                      tabButtonRefs.current[tabIndex]?.focus();
+                    }
+                  }}
                   onSelectEvidence={handleSelectEvidence}
                 />
               </div>
-            </div>
-          )}
+            )}
 
-          {/* TAB 3: Recommended Repair Strategies */}
-          {activeTab === 'repair' && (
-            <div
-              id="tab-panel-repair"
-              role="tabpanel"
-              aria-labelledby="tab-btn-repair"
-              className="tab-panel"
-            >
-              <StrategyMatrix
-                strategies={result.strategy_ranking}
-                winningStrategyId={result.recommendation.grounding?.winning_strategy_id}
-              />
-            </div>
-          )}
+            {/* TAB 2: Possible Causes & Contradictions */}
+            {activeTab === 'causes' && (
+              <div
+                id="tab-panel-causes"
+                role="tabpanel"
+                aria-labelledby="tab-btn-causes"
+                className="tab-panel"
+              >
+                <div className="causes-flow">
+                  <HypothesesInspector
+                    hypotheses={result.hypotheses}
+                    onSelectEvidence={handleSelectEvidence}
+                  />
+                  <ScopeTensionsPanel
+                    conflicts={result.conflicts}
+                    evidenceList={result.evidence}
+                    onSelectEvidence={handleSelectEvidence}
+                  />
+                </div>
+              </div>
+            )}
 
-          {/* TAB 4: Investigation Steps Timeline */}
-          {activeTab === 'timeline' && (
-            <div
-              id="tab-panel-timeline"
-              role="tabpanel"
-              aria-labelledby="tab-btn-timeline"
-              className="tab-panel"
-            >
-              <InvestigationLifecycleStepper
-                trace={result.investigation_trace}
-                replayIndex={replayIndex}
-                isReplaying={isReplaying}
-                onToggleReplay={handleToggleReplay}
-                onResetReplay={handleResetReplay}
-                onSetReplayIndex={handleSetReplayIndex}
-                runId={result.run_id}
-                validationPassed={result.validation_passed}
-              />
-            </div>
-          )}
+            {/* TAB 3: Recommended Repair Strategies */}
+            {activeTab === 'repair' && (
+              <div
+                id="tab-panel-repair"
+                role="tabpanel"
+                aria-labelledby="tab-btn-repair"
+                className="tab-panel"
+              >
+                <StrategyMatrix
+                  strategies={result.strategy_ranking}
+                  winningStrategyId={result.recommendation.grounding?.winning_strategy_id}
+                />
+              </div>
+            )}
 
-          {/* TAB 5: All Collected Evidence Ledger */}
-          {activeTab === 'evidence' && (
-            <div
-              id="tab-panel-evidence"
-              role="tabpanel"
-              aria-labelledby="tab-btn-evidence"
-              className="tab-panel"
-              ref={evidenceLedgerRef}
-            >
-              <EvidenceLedger
-                evidence={result.evidence}
-                conflicts={result.conflicts}
-                selectedEvidenceId={selectedEvidenceId}
-                onClearSelectedEvidence={() => setSelectedEvidenceId(null)}
-              />
-            </div>
-          )}
-        </main>
+            {/* TAB 4: Investigation Steps Timeline */}
+            {activeTab === 'timeline' && (
+              <div
+                id="tab-panel-timeline"
+                role="tabpanel"
+                aria-labelledby="tab-btn-timeline"
+                className="tab-panel"
+              >
+                <InvestigationLifecycleStepper
+                  trace={result.investigation_trace}
+                  replayIndex={replayIndex}
+                  isReplaying={isReplaying}
+                  onToggleReplay={handleToggleReplay}
+                  onResetReplay={handleResetReplay}
+                  onSetReplayIndex={handleSetReplayIndex}
+                  replaySpeed={replaySpeed}
+                  onSetReplaySpeed={setReplaySpeed}
+                  runId={result.run_id}
+                  validationPassed={result.validation_passed}
+                />
+              </div>
+            )}
+
+            {/* TAB 5: All Collected Evidence Ledger */}
+            {activeTab === 'evidence' && (
+              <div
+                id="tab-panel-evidence"
+                role="tabpanel"
+                aria-labelledby="tab-btn-evidence"
+                className="tab-panel"
+                ref={evidenceLedgerRef}
+              >
+                <EvidenceLedger
+                  evidence={result.evidence}
+                  conflicts={result.conflicts}
+                  selectedEvidenceId={selectedEvidenceId}
+                  onClearSelectedEvidence={() => setSelectedEvidenceId(null)}
+                />
+              </div>
+            )}
+          </main>
+        </ErrorBoundary>
       )}
     </div>
   );

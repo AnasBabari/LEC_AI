@@ -19,6 +19,8 @@ interface StepperProps {
   onSetReplayIndex: (index: number) => void;
   onToggleReplay: () => void;
   onResetReplay: () => void;
+  replaySpeed?: number;
+  onSetReplaySpeed?: (speed: number) => void;
   runId: string;
   validationPassed: boolean;
 }
@@ -73,6 +75,8 @@ export const InvestigationLifecycleStepper: React.FC<StepperProps> = ({
   onSetReplayIndex,
   onToggleReplay,
   onResetReplay,
+  replaySpeed = 1,
+  onSetReplaySpeed,
   runId,
   validationPassed,
 }) => {
@@ -185,6 +189,23 @@ export const InvestigationLifecycleStepper: React.FC<StepperProps> = ({
             <SkipForward size={13} />
             <span>End</span>
           </button>
+
+          {onSetReplaySpeed && (
+            <div className="speed-toggle-group" style={{ display: 'inline-flex', gap: '2px', marginLeft: '0.5rem', background: 'rgba(15, 23, 42, 0.6)', borderRadius: '6px', padding: '2px', border: '1px solid rgba(51, 65, 85, 0.5)' }}>
+              {[0.5, 1, 2].map((spd) => (
+                <button
+                  key={spd}
+                  type="button"
+                  onClick={() => onSetReplaySpeed(spd)}
+                  className={`ctrl-btn ${replaySpeed === spd ? 'ctrl-btn-primary' : ''}`}
+                  style={{ padding: '2px 8px', fontSize: '0.75rem', height: '24px', minWidth: '32px' }}
+                  title={`Play at ${spd}x speed`}
+                >
+                  {spd}x
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Progress bar */}
