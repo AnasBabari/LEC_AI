@@ -207,32 +207,96 @@ describe('Faultline App Component', () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText(/offline-deterministic-fake/i)).toBeInTheDocument();
+      expect(screen.getAllByText(/Offline Demo/i).length).toBeGreaterThan(0);
     });
   });
 
   it('runs analysis and renders winning strategy at rank #1 with suggested command', async () => {
     render(<App />);
 
-    const runBtn = screen.getByRole('button', { name: /Run Investigation/i });
+    const runBtn = screen.getByRole('button', { name: /Diagnose This Incident/i });
     fireEvent.click(runBtn);
 
     await waitFor(() => {
       expect(screen.getAllByText(/Restart Invalidation Consumer & Drain Backlog/i).length).toBeGreaterThan(0);
-      expect(screen.getByText(/4-Dimensional Repair Strategy Ranking/i)).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /Repair Options/i })).toBeInTheDocument();
       expect(screen.getByText(/kubectl rollout restart deployment\/cache-invalidation-worker/i)).toBeInTheDocument();
     });
+  });
+
+  it('provides accessible Copy JSON and Download JSON buttons upon diagnosis', async () => {
+    render(<App />);
+
+    const runBtn = screen.getByRole('button', { name: /Diagnose This Incident/i });
+    fireEvent.click(runBtn);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Copy JSON/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Download JSON/i })).toBeInTheDocument();
+    });
+  });
+
+  it('supports keyboard roving focus across dashboard tabs', async () => {
+    render(<App />);
+
+    const runBtn = screen.getByRole('button', { name: /Diagnose This Incident/i });
+    fireEvent.click(runBtn);
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: /Overview/i })).toBeInTheDocument();
+    });
+
+    const overviewTab = screen.getByRole('tab', { name: /Overview/i });
+    expect(overviewTab).toHaveAttribute('aria-selected', 'true');
+    expect(overviewTab).toHaveAttribute('tabindex', '0');
+
+    // Press ArrowRight to move to Causes tab
+    fireEvent.keyDown(overviewTab, { key: 'ArrowRight' });
+
+    await waitFor(() => {
+      const causesTab = screen.getByRole('tab', { name: /Root Causes/i });
+      expect(causesTab).toHaveAttribute('aria-selected', 'true');
+      expect(causesTab).toHaveAttribute('tabindex', '0');
+      expect(overviewTab).toHaveAttribute('tabindex', '-1');
+    });
+
+    // Press End key to jump to Evidence tab
+    const currentTab = screen.getByRole('tab', { name: /Root Causes/i });
+    fireEvent.keyDown(currentTab, { key: 'End' });
+
+    await waitFor(() => {
+      const evidenceTab = screen.getByRole('tab', { name: /Evidence/i });
+      expect(evidenceTab).toHaveAttribute('aria-selected', 'true');
+    });
+  });
+
+  it('allows checking safety preconditions with accessible checkbox inputs', async () => {
+    render(<App />);
+
+    const runBtn = screen.getByRole('button', { name: /Diagnose This Incident/i });
+    fireEvent.click(runBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Before running this command, verify:/i)).toBeInTheDocument();
+    });
+
+    const checkbox = screen.getByRole('checkbox', { name: /Verify precondition: Verify queue reachability/i });
+    expect(checkbox).not.toBeChecked();
+
+    fireEvent.click(checkbox);
+    expect(checkbox).toBeChecked();
+    expect(screen.getByText(/All listed preconditions marked as reviewed. Operator approval is still required./i)).toBeInTheDocument();
   });
 
   it('clears stale analysis report when switching scenarios', async () => {
     render(<App />);
 
     // 1. Run investigation
-    const runBtn = screen.getByRole('button', { name: /Run Investigation/i });
+    const runBtn = screen.getByRole('button', { name: /Diagnose This Incident/i });
     fireEvent.click(runBtn);
 
     await waitFor(() => {
-      expect(screen.getByText(/4-Dimensional Repair Strategy Ranking/i)).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /Repair Options/i })).toBeInTheDocument();
     });
 
     // 2. Change scenario using scenario dropdown
@@ -240,14 +304,14 @@ describe('Faultline App Component', () => {
     fireEvent.change(scenarioSelect, { target: { value: 'index_regression' } });
 
     // 3. Stale results must be cleared
-    expect(screen.queryByText(/4-Dimensional Repair Strategy Ranking/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /Repair Options/i })).not.toBeInTheDocument();
   });
 
   it('handles and displays error message when investigation fails', async () => {
     vi.spyOn(api, 'analyzeScenario').mockRejectedValueOnce(new Error('Internal server timeout (504)'));
     render(<App />);
 
-    const runBtn = screen.getByRole('button', { name: /Run Investigation/i });
+    const runBtn = screen.getByRole('button', { name: /Diagnose This Incident/i });
     fireEvent.click(runBtn);
 
     await waitFor(() => {

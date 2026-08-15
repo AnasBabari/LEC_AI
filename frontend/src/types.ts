@@ -138,9 +138,11 @@ export interface ModelCallTrace {
 export interface ModelExecutionMetadata {
   configured_primary_model: string;
   configured_fallback_model?: string;
+  configured_openrouter_model?: string;
   startup_resolved_model?: string;
   startup_resolution_status?: string;
   model_used: string;
+  provider_used?: string;
   models_used?: string[];
   thinking_level: string;
   fallback_occurred: boolean;
