@@ -83,7 +83,68 @@ Faultline evaluates a full repair catalogue — `RECOVER_CONSUMER_AND_DRAIN`, `T
 
 ## How Faultline works
 
-### 1. Functional Workflow (For Non-Technical Audiences)
+### 1. End-to-End System & Monitored Target Architecture
+
+The diagram below illustrates how the **Frontend**, **Backend Kernel**, **Multi-Tier AI Cascade**, and **Monitored Production Target** interact during a live investigation, showing real metrics, KPIs, and diagnostic queries exchanged across layers:
+
+```mermaid
+flowchart TB
+    subgraph UI["Frontend Layer - React 19 Dashboard"]
+        Dash["Observability Dashboard"]
+        Replay["Investigation Replay Scrubber"]
+        TensionView["Scope Tensions & Contradictions Panel"]
+        StratMatrix["4D Strategy Decision Matrix"]
+        SafetyBox["Safety Console & Approval Gate"]
+    end
+
+    subgraph Backend["Backend Engine & Authoritative Kernel - FastAPI / Python"]
+        AppRouter["FastAPI Routes & CORS Middleware"]
+        Orchestrator["IncidentOrchestrator State Machine & Tool Budget"]
+        Ledger["Append-Only Evidence Ledger with Immutable IDs"]
+        PolicyEngine["PolicyEngine & ConflictDetector"]
+        Scorer["EvidenceEvaluator & StrategyRanker with 4D Math"]
+        Validator["ReportValidator Authoritative Grounding Gate"]
+    end
+
+    subgraph AI["AI Reasoning Layer - Multi-Tier Cascade"]
+        Provider["LLM Provider Interface - Session-Sticky"]
+        Tier1["Primary: Gemini 3.7 Flash"]
+        Tier2["Fallback: Gemini 3.6 Flash"]
+        Tier3["Tertiary: OpenRouter Gemini 2.0 Flash"]
+        Tier4["Offline Mode: Deterministic Engine"]
+    end
+
+    subgraph Target["Monitored System Target - E-Commerce Platform"]
+        GW["API Gateway - p99: 2400ms, Errors: 12.4% 504"]
+        Cache["Redis Cache - Hit Ratio: 34%, Mem: 1.8GB"]
+        DB["PostgreSQL DB - Pool: 92%, Direct Ping: 1.8ms"]
+        Queue["RabbitMQ - Backlog: 42k msgs, Worker: Dead"]
+    end
+
+    User["Human SRE / Operator"] <-->|Browser UI Interaction| Dash
+    Dash <-->|REST API JSON on Port 8000| AppRouter
+
+    AppRouter --> Orchestrator
+    Orchestrator --> Ledger
+    Orchestrator --> PolicyEngine
+    Orchestrator --> Scorer
+    Orchestrator --> Validator
+
+    Orchestrator <-->|Structured Tool Calls & Hypotheses| Provider
+    Provider --> Tier1
+    Tier1 -.->|Tier 2 Fallback| Tier2
+    Tier2 -.->|Tier 3 Fallback| Tier3
+    Tier3 -.->|Offline Fallback| Tier4
+
+    Orchestrator -->|1. Telemetry Query| GW
+    Orchestrator -->|2. Synthetic Probes| DB
+    Orchestrator -->|3. Event Logs| Queue
+    Orchestrator -->|4. Telemetry Query| Cache
+```
+
+---
+
+### 2. Functional Workflow (For Non-Technical Audiences)
 
 The diagram below outlines the 6 core functional requirements of an investigation — from the initial alarm to final human sign-off:
 
@@ -94,9 +155,9 @@ flowchart TD
     end
 
     subgraph Step2["2. Multi-Angle Clue Gathering"]
-        T["User Workload Telemetry<br/>(Response times & traffic)"]
-        P["Synthetic Health Checks<br/>(Direct component pings)"]
-        E["Operational Logs<br/>(Worker heartbeats & queues)"]
+        T["User Workload Telemetry<br/>Response times & traffic"]
+        P["Synthetic Health Checks<br/>Direct component pings"]
+        E["Operational Logs<br/>Worker heartbeats & queues"]
     end
 
     subgraph Step3["3. Conflict Reconciliation"]
@@ -108,7 +169,7 @@ flowchart TD
     end
 
     subgraph Step5["5. Competing Repair Trade-Offs"]
-        Rank["4-Dimensional Repair Ranking<br/>Impact (60%) · Safety (20%) · Speed (15%) · Cost (5%)"]
+        Rank["4-Dimensional Repair Ranking<br/>Impact 60% · Safety 20% · Speed 15% · Cost 5%"]
     end
 
     subgraph Step6["6. Safety & Human Sign-Off"]
@@ -132,7 +193,7 @@ flowchart TD
 
 ---
 
-### 2. Architecture & Decision Pipeline
+### 3. Architecture & Decision Pipeline
 
 ```mermaid
 flowchart LR
@@ -184,67 +245,6 @@ flowchart LR
 The solid arrows show the trusted decision path: investigate, record evidence, compare possible causes, **compare several competing repairs**, rank them by their trade-offs, validate the result, and explain it to a human — who makes the final decision. AI models (Google Gemini with secondary Gemini and tertiary OpenRouter fallback) assist with investigation and explanation (dotted arrows), while deterministic Python owns evidence recording, conflict detection, scoring, ranking, and validation, guided by fixed scoring and safety rules. The process stops at a human operator — Faultline never executes a repair automatically.
 
 > The diagram highlights three representative choices from the canonical incident. Faultline evaluates the full repair catalogue before producing its ranking.
-
----
-
-### 3. End-to-End Architecture & Monitored Infrastructure Interactions
-
-The diagram below illustrates how the **Frontend**, **Backend Kernel**, **Multi-Tier AI Cascade**, and **Monitored Production Target** interact during a live investigation, showing real metrics, KPIs, and diagnostic queries exchanged across layers:
-
-```mermaid
-flowchart TB
-    subgraph UI["Frontend Layer (React 19 Dashboard)"]
-        Dash["Observability Dashboard"]
-        Replay["Investigation Replay Scrubber"]
-        TensionView["Scope Tensions & Contradictions Panel"]
-        StratMatrix["4D Strategy Decision Matrix"]
-        SafetyBox["Safety Console & Approval Gate"]
-    end
-
-    subgraph Backend["Backend Engine & Authoritative Kernel (FastAPI / Python)"]
-        AppRouter["FastAPI Routes & CORS Middleware"]
-        Orchestrator["IncidentOrchestrator (State Machine & Budget)"]
-        Ledger["Append-Only Evidence Ledger (Immutable IDs)"]
-        PolicyEngine["PolicyEngine & ConflictDetector"]
-        Scorer["EvidenceEvaluator & StrategyRanker (4D Math)"]
-        Validator["ReportValidator (Authoritative Grounding Gate)"]
-    end
-
-    subgraph AI["AI Reasoning Layer (Multi-Tier Cascade)"]
-        Provider["LLM Provider (Session-Sticky Cascade)"]
-        Tier1["Primary: Gemini 3.7 Flash"]
-        Tier2["Fallback: Gemini 3.6 Flash"]
-        Tier3["Tertiary: OpenRouter Gemini 2.0 Flash"]
-        Tier4["Offline Mode: Deterministic Engine"]
-    end
-
-    subgraph Target["Monitored System Target (E-Commerce Infrastructure)"]
-        GW["API Gateway (p99: 2400ms, Errors: 12.4% 504)"]
-        Cache["Redis Cache (Hit Ratio: 34%, Mem: 1.8GB)"]
-        DB["PostgreSQL DB (Pool: 92%, Direct Ping: 1.8ms)"]
-        Queue["RabbitMQ (Backlog: 42k msgs, Worker: Dead)"]
-    end
-
-    User["Human SRE / Operator"] <-->|Browser UI Interaction| Dash
-    Dash <-->|REST API JSON (Port 8000)| AppRouter
-
-    AppRouter --> Orchestrator
-    Orchestrator --> Ledger
-    Orchestrator --> PolicyEngine
-    Orchestrator --> Scorer
-    Orchestrator --> Validator
-
-    Orchestrator <-->|Structured Tool Calls & Hypotheses| Provider
-    Provider --> Tier1
-    Tier1 -.->|429/503 Fallback| Tier2
-    Tier2 -.->|Quota Fallback| Tier3
-    Tier3 -.->|Offline Fallback| Tier4
-
-    Orchestrator -->|1. query_telemetry| GW
-    Orchestrator -->|2. run_health_probes| DB
-    Orchestrator -->|3. fetch_operational_events| Queue
-    Orchestrator -->|4. query_telemetry| Cache
-```
 
 ---
 
