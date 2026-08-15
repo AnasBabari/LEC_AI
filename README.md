@@ -83,9 +83,9 @@ Faultline evaluates a full repair catalogue — `RECOVER_CONSUMER_AND_DRAIN`, `T
 
 ## How Faultline works
 
-### 1. End-to-End System & Monitored Target Architecture
+### 1. End-to-End System & Simulated Infrastructure Architecture
 
-How the **Frontend**, **Backend Kernel**, **AI Cascade**, and **Monitored Systems** interact:
+How the **Frontend**, **Decision Core**, **AI Cascade**, and **Simulated Target System** interact:
 
 ```mermaid
 flowchart TB
@@ -93,43 +93,46 @@ flowchart TB
         Dash["Observability Views · Replay Timeline · Scope Tensions · 4D Matrix · Safety Lock"]
     end
 
-    subgraph Backend["⚙️ Faultline Engine & Authoritative Kernel (FastAPI / Python)"]
+    subgraph Backend["⚙️ Faultline Decision Core (FastAPI / Python)"]
         Orchestrator["Investigation Orchestrator & Tool Budget"]
         Ledger["Append-Only Evidence Ledger (Immutable IDs)"]
         Engine["Policy Engine · Conflict Detector · 4D Math Scorer"]
-        Validator["Report Validator (Safety & Grounding Gate)"]
+        Validator["Report Validator (Deterministic Safety & Grounding Gate)"]
         Orchestrator --> Ledger --> Engine --> Validator
     end
 
-    subgraph AI["🧠 Multi-Tier AI Cascade"]
-        Tier1["Primary: Gemini 3.7 Flash"]
-        Tier2["Fallback: Gemini 3.6 Flash"]
-        Tier3["Tertiary: OpenRouter Gemini 2.0"]
-        Tier4["Offline: Deterministic Engine"]
-        Tier1 -.-> Tier2 -.-> Tier3 -.-> Tier4
+    subgraph AI["🧠 Multi-Tier AI Reasoning"]
+        subgraph LiveMode["Live Mode (Session-Sticky Cascade)"]
+            Tier1["Primary: Gemini 3.7 Flash"]
+            Tier2["Fallback: Gemini 3.6 Flash"]
+            Tier3["Tertiary: OpenRouter Gemini 2.0"]
+            Tier1 -. 429/503 .-> Tier2 -. Quota .-> Tier3
+        end
+        subgraph OfflineMode["Explicit Offline Mode"]
+            Offline["Deterministic Provider (Zero Credentials)"]
+        end
     end
 
-    subgraph MonitoredSystem["🏢 Monitored System (E-Commerce Platform)"]
-        GW["API Gateway · p99: 2,400ms · 12.4% HTTP 504"]
-        Cache["Redis Cache · 34% Hit Ratio · 42k Queue Backlog"]
-        DB["PostgreSQL DB · 92% Pool Load · 1.8ms Direct Ping"]
+    subgraph Target["🏢 Simulated Operational System (Canonical Incident)"]
+        GW["API Gateway<br/>p99: 2,400ms"]
+        Cache["Redis Cache<br/>34.2% Hit Ratio · Stale Keys"]
+        MQ["Message Queue<br/>42,850 Backlog · Consumer Down"]
+        DB["PostgreSQL DB<br/>92% Pool Load · 1.8ms Direct Probe"]
     end
 
-    User["👤 Human Operator"] <-->|Reviews & Approves| UI
+    User["👤 Human Operator"] <-->|Reviews & Decides| UI
     UI <-->|JSON REST API| Orchestrator
-    Orchestrator <-->|Structured Prompts| Tier1
-    Orchestrator -->|1. Workload Telemetry| GW
-    Orchestrator -->|2. Operational Events| Cache
-    Orchestrator -->|3. Synthetic Health Probes| DB
+    Orchestrator <-->|Diagnostic Queries & Prompts| Tier1
+    Orchestrator -->|Diagnostic Tools<br/>Telemetry · Probes · Events| Target
 ```
 
-> **Key takeaway:** AI models suggest diagnostic tool queries and draft narrative hypotheses; deterministic Python verifies facts, calculates scores, and locks down execution safety.
+> **Key takeaway:** AI models suggest diagnostic queries and draft decision explanations; deterministic Python verifies evidence, calculates scores, and locks down execution safety.
 
 ---
 
 ### 2. Functional Workflow (For Non-Technical Audiences)
 
-The 5 core stages of an automated investigation:
+The 6 core stages of an automated investigation:
 
 ```mermaid
 flowchart TD
@@ -138,22 +141,25 @@ flowchart TD
     end
 
     subgraph S2["2. Multi-Angle Clue Gathering"]
-        Telemetry["📊 Workload Telemetry<br/>Live user response times & traffic"]
-        Probes["🩺 Synthetic Health Probes<br/>Direct component pings & test queries"]
-        Logs["📜 Operational Logs<br/>Worker heartbeats, queues & eviction events"]
+        Telemetry["📊 Workload Telemetry<br/>Workload response times & traffic across services"]
+        Probes["🩺 Synthetic Health Probes<br/>Direct component pings & point-in-time test queries"]
+        Logs["📜 Operational Logs<br/>Worker heartbeats, queue backlogs & eviction events"]
     end
 
     subgraph S3["3. Conflict Reconciliation"]
-        Tension["⚖️ Scope Tension Resolution<br/>Reconcile why direct probe is healthy while user queries stall"]
+        Tension["⚖️ Scope Tension Resolution<br/>Reconcile why direct probe is healthy (1.8ms) while user workload stalls (92% pool)"]
     end
 
-    subgraph S4["4. Root-Cause & Strategy Ranking"]
-        Causes["🔍 Mathematical Cause Scoring<br/>Reliability + Freshness + Directness"]
-        Repairs["🎯 4D Repair Strategy Ranking<br/>Impact 60% · Safety 20% · Speed 15% · Cost 5%"]
+    subgraph S4["4. Root-Cause Scoring"]
+        Causes["🔍 Mathematical Cause Scoring<br/>Evaluates full catalogue: Reliability + Freshness + Directness - Source Cap"]
     end
 
-    subgraph S5["5. Human-in-the-Loop Sign-Off"]
-        Approval["🛡️ Human Operator Approval<br/>Zero automated execution — human reviews evidence and executes fix"]
+    subgraph S5["5. 4D Repair Strategy Ranking"]
+        Repairs["🎯 Competing Repair Trade-Offs<br/>Rank full catalogue: Impact 60% · Safety 20% · Speed 15% · Cost 5%"]
+    end
+
+    subgraph S6["6. Validation Gate & Human Decision"]
+        Approval["🛡️ Deterministic Validation Gate → Human Operator<br/>Python validates complete report; human reviews evidence & decides whether to act"]
     end
 
     Alert --> Telemetry
@@ -169,11 +175,11 @@ flowchart TD
     Repairs --> Approval
 ```
 
-> **Key takeaway:** Faultline isolates root causes by reconciling conflicting evidence and ranks repairs by 4D trade-offs before presenting them for human sign-off.
+> **Key takeaway:** Faultline isolates root causes by reconciling conflicting evidence and ranks repairs by 4D trade-offs before passing through an independent validation gate for human decision.
 
 ---
 
-### 3. Architecture & Decision Pipeline
+### 3. Decision & Trust Boundary
 
 The trusted decision path across AI reasoning and deterministic validation:
 
@@ -184,23 +190,23 @@ flowchart LR
     Evidence["📜 Evidence Ledger"]
     Causes["⚖️ Root Cause Scoring"]
     Repairs["🎯 4D Strategy Ranking"]
-    Validate["🛡️ Policy Validation"]
-    Human["👤 Human Sign-Off"]
+    Explain["📝 Decision Explanation"]
+    Validate["🛡️ Deterministic Validation Gate"]
+    Human["👤 Human Operator"]
 
     AI["🧠 AI Model Cascade<br/>(Gemini / OpenRouter)"]
     Rules["📐 Authoritative Rules<br/>(Policy & Safety Invariants)"]
 
-    Incident --> Investigate --> Evidence --> Causes --> Repairs --> Validate --> Human
+    Incident --> Investigate --> Evidence --> Causes --> Repairs --> Explain --> Validate --> Human
 
     AI -.->|Tool Selection| Investigate
-    AI -.->|Narrative Drafts| Validate
+    AI -.->|Decision Narrative| Explain
     Rules --> Causes
     Rules --> Repairs
     Rules --> Validate
 ```
 
-> **Key takeaway:** Deterministic Python owns the authoritative pipeline (solid arrows), while AI assists with diagnostic selection and post-mortem narrative synthesis (dotted arrows).
-
+> **Key takeaway:** Deterministic Python owns the authoritative pipeline (solid arrows), while AI assists with diagnostic selection and decision explanation (dotted arrows). All outputs pass through Python validation before reaching the operator.
 ---
 
 ## Inside Faultline
@@ -306,16 +312,16 @@ Faultline does not trust its own generated report simply because the pipeline pr
 
 If the structured result disagrees with the fixed rules, the report is rejected. This gate lives in `ReportValidator` (`src/faultline/validation.py`).
 
-### Model setup & multi-tier fallback cascade
+### Model setup: three-tier live cascade + deterministic offline mode
 
-Faultline uses a resilient, multi-tier provider cascade with bounded retries and exponential backoff to handle rate limits, service degradations, and regional quotas:
+Faultline uses a resilient, three-tier live provider cascade with bounded retries and exponential backoff, plus an explicit deterministic offline mode:
 
-1. **Tier 1 (Primary)**: `gemini-3.7-flash` (or `GEMINI_MODEL`) via Google GenAI SDK.
-2. **Tier 2 (Gemini Fallback)**: `gemini-3.6-flash` (or `GEMINI_FALLBACK_MODEL`) if the primary model encounters rate limits (429), capacity issues (503), or transient network timeouts.
-3. **Tier 3 (OpenRouter Fallback)**: `google/gemini-2.0-flash-001` (or `OPENROUTER_FALLBACK_MODEL`) via OpenRouter's OpenAI-compatible API (`OPENROUTER_API_KEY`) if Google Gemini endpoints are unreachable or quota-exhausted.
-4. **Tier 4 (Deterministic Offline Mode)**: Built-in deterministic reasoning provider for hermetic CI builds, local development, and zero-credential assessment.
+- **Live Tier 1 (Primary)**: `gemini-3.7-flash` (or `GEMINI_MODEL`) via Google GenAI SDK.
+- **Live Tier 2 (Gemini Fallback)**: `gemini-3.6-flash` (or `GEMINI_FALLBACK_MODEL`) if the primary model encounters rate limits (429), capacity issues (503), or transient network timeouts.
+- **Live Tier 3 (OpenRouter Fallback)**: `google/gemini-2.0-flash-001` (or `OPENROUTER_FALLBACK_MODEL`) via OpenRouter's OpenAI-compatible API (`OPENROUTER_API_KEY`) if Google Gemini endpoints are unreachable or quota-exhausted.
+- **Deterministic Offline Mode**: Built-in deterministic reasoning provider (`FakeGeminiProvider`) for hermetic CI builds, local development, and zero-credential assessment when API keys are omitted.
 
-**Session stickiness:** When a fallback tier succeeds, subsequent diagnostic and narrative calls in that investigation session stay on the working provider to eliminate retry latency.
+**Session stickiness:** When a live fallback tier succeeds, subsequent diagnostic and narrative calls in that investigation session stay on the working provider to eliminate retry latency.
 
 **Strict error sanitization:** Secrets, API keys, and authorization headers are never logged or returned in error payloads. Non-transient client errors (such as 400 Bad Request or 401 Unauthorized) fail fast without triggering invalid fallbacks.
 
@@ -422,10 +428,14 @@ These boundaries are deliberate: the assessment focuses on reasoning through con
 
 ## Scenarios
 
-Faultline includes two tested scenarios:
+Faultline includes six tested scenario fixtures:
 
-- **`cache_invalidation_lag`** — The canonical incident described above. Winner: `RECOVER_CONSUMER_AND_DRAIN` (restart the failed cache worker and drain its backlog).
-- **`index_regression`** — A software update accidentally removes a database index — a structure that helps the database find information quickly. The database itself remains healthy, but real application queries become much slower. Faultline recommends rebuilding the missing index: `REBUILD_DATABASE_INDEX`.
+- **`cache_invalidation_lag`** (Canonical Incident) — A stalled invalidation queue consumer causes stale cache entries and cascading database query overload. Winner: `RECOVER_CONSUMER_AND_DRAIN`.
+- **`index_regression`** — A release accidentally drops a database index. Direct health probes pass, but user workload queries degrade severely. Winner: `REBUILD_DATABASE_INDEX`.
+- **`flash_sale_surge`** — Extreme promotional traffic overwhelms backend worker pools and ingress gateways. Winner: `THROTTLE_TRAFFIC`.
+- **`cache_cluster_outage`** — A primary Redis node crashes and fails over, causing transient cache misses and connection pool saturation. Winner: `RESTART_CACHE`.
+- **`replica_replication_lag`** — High write volumes cause read replica synchronization lag, surfacing stale data reads. Winner: `THROTTLE_TRAFFIC`.
+- **`database_capacity_exhaustion`** — Unoptimized long-running transactions exhaust connection pools and locks. Winner: `FAILOVER_DATABASE`.
 
 ### What I would build next
 
