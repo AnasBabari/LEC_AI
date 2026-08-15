@@ -1,0 +1,113 @@
+{
+  "id": "flash_sale_surge",
+  "title": "API Gateway Traffic Surge during High-Traffic Event",
+  "incident_at": "2026-08-14T12:00:00Z",
+  "description": "Production alerts report spiking API Gateway response times and rate limit throttling due to an unprecedented surge in incoming client traffic, while backend database and cache clusters remain responsive to direct health probes.",
+  "affected_components": ["api_gateway", "cache", "database"],
+  "initial_fault_report": {
+    "source": "datadog_apm_alert",
+    "severity": "CRITICAL",
+    "headline": "High API Gateway Latency (3100ms) & Ingress Request Surge (12,500 req/sec)",
+    "reported_at": "2026-08-14T12:00:00Z",
+    "details": "Incoming customer checkout traffic exceeds ingress throughput threshold."
+  },
+  "diagnostics": {
+    "telemetry": [
+      {
+        "signal": "gateway_throughput",
+        "component": "api_gateway",
+        "dimension": "throughput",
+        "status": "degraded",
+        "value": 12500.0,
+        "unit": "req/sec",
+        "offset_minutes": -1,
+        "window_duration_seconds": 300,
+        "scope": "workload",
+        "reliability": "aggregated",
+        "details": "Ingress API Gateway throughput exceeded 12,500 req/sec, far above baseline capacity of 4,000 req/sec."
+      },
+      {
+        "signal": "gateway_p99_latency",
+        "component": "api_gateway",
+        "dimension": "latency",
+        "status": "degraded",
+        "value": 3100.0,
+        "unit": "ms",
+        "offset_minutes": -1,
+        "window_duration_seconds": 300,
+        "scope": "workload",
+        "reliability": "aggregated",
+        "details": "Ingress gateway p99 response time rose from 30ms to 3,100ms due to connection queuing."
+      },
+      {
+        "signal": "db_workload_connection_saturation",
+        "component": "database",
+        "dimension": "latency",
+        "status": "degraded",
+        "value": 58.0,
+        "unit": "percent",
+        "offset_minutes": -1,
+        "window_duration_seconds": 300,
+        "scope": "workload",
+        "reliability": "aggregated",
+        "details": "Database connection pool elevated to 58% under peak ingress checkout requests."
+      }
+    ],
+    "health_probe": [
+      {
+        "signal": "gateway_health_endpoint",
+        "component": "api_gateway",
+        "dimension": "throughput",
+        "status": "healthy",
+        "value": 200.0,
+        "unit": "http_status",
+        "offset_minutes": -1,
+        "window_duration_seconds": 60,
+        "scope": "synthetic_probe",
+        "reliability": "verified",
+        "details": "Direct synthetic probe on API Gateway /healthz responds normally with HTTP 200 in 1.8ms."
+      },
+      {
+        "signal": "db_synthetic_direct_probe",
+        "component": "database",
+        "dimension": "latency",
+        "status": "healthy",
+        "value": 1.2,
+        "unit": "ms",
+        "offset_minutes": -1,
+        "window_duration_seconds": 60,
+        "scope": "synthetic_probe",
+        "reliability": "verified",
+        "details": "Direct synthetic query probe on database responds in 1.2ms with CPU below 20%."
+      },
+      {
+        "signal": "cache_cluster_ping",
+        "component": "cache",
+        "dimension": "availability",
+        "status": "healthy",
+        "value": 0.4,
+        "unit": "ms",
+        "offset_minutes": -1,
+        "window_duration_seconds": 60,
+        "scope": "synthetic_probe",
+        "reliability": "verified",
+        "details": "Cache cluster ping responds in 0.4ms; cache hit ratio remains normal."
+      }
+    ],
+    "operational_events": [
+      {
+        "signal": "rate_limit_saturation_event",
+        "component": "api_gateway",
+        "dimension": "throughput",
+        "status": "degraded",
+        "value": 429.0,
+        "unit": "status_code",
+        "offset_minutes": -5,
+        "window_duration_seconds": 600,
+        "scope": "ingress_policy",
+        "reliability": "verified",
+        "details": "Ingress rate limiter triggered 429 Too Many Requests for unauthenticated burst traffic."
+      }
+    ]
+  }
+}

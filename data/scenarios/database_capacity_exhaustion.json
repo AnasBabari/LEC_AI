@@ -1,0 +1,100 @@
+{
+  "id": "database_capacity_exhaustion",
+  "title": "Primary Database Capacity Exhaustion under Runaway Analytics Load",
+  "incident_at": "2026-08-14T17:00:00Z",
+  "description": "Primary database CPU and storage IOPS reached 100% saturation due to runaway analytical query execution, causing severe query degradation across all services while cache clusters remain healthy.",
+  "affected_components": ["api_gateway", "database", "cache"],
+  "initial_fault_report": {
+    "source": "aws_cloudwatch_alarm",
+    "severity": "CRITICAL",
+    "headline": "Primary Database 100% CPU & Storage IOPS Saturation",
+    "reported_at": "2026-08-14T17:00:00Z",
+    "details": "Primary DB instance unresponsive to application connection requests."
+  },
+  "diagnostics": {
+    "telemetry": [
+      {
+        "signal": "db_workload_connection_saturation",
+        "component": "database",
+        "dimension": "latency",
+        "status": "degraded",
+        "value": 99.4,
+        "unit": "percent",
+        "offset_minutes": -1,
+        "window_duration_seconds": 300,
+        "scope": "workload",
+        "reliability": "aggregated",
+        "details": "Primary database connection pool and CPU utilization saturated at 99.4% under heavy reporting queries."
+      },
+      {
+        "signal": "gateway_p99_latency",
+        "component": "api_gateway",
+        "dimension": "latency",
+        "status": "degraded",
+        "value": 4200.0,
+        "unit": "ms",
+        "offset_minutes": -1,
+        "window_duration_seconds": 300,
+        "scope": "workload",
+        "reliability": "aggregated",
+        "details": "Gateway p99 latency spiked to 4,200ms awaiting database socket availability."
+      }
+    ],
+    "health_probe": [
+      {
+        "signal": "db_synthetic_direct_probe",
+        "component": "database",
+        "dimension": "latency",
+        "status": "degraded",
+        "value": 5200.0,
+        "unit": "ms",
+        "offset_minutes": -1,
+        "window_duration_seconds": 60,
+        "scope": "synthetic_probe",
+        "reliability": "verified",
+        "details": "Direct synthetic query probe on database primary timed out after 5,200ms due to 100% CPU saturation."
+      },
+      {
+        "signal": "gateway_health_endpoint",
+        "component": "api_gateway",
+        "dimension": "latency",
+        "status": "healthy",
+        "value": 200.0,
+        "unit": "http_status",
+        "offset_minutes": -1,
+        "window_duration_seconds": 60,
+        "scope": "synthetic_probe",
+        "reliability": "verified",
+        "details": "Gateway internal /healthz endpoint responding with HTTP 200 in 1.9ms while downstream DB calls fail."
+      },
+      {
+        "signal": "cache_cluster_ping",
+        "component": "cache",
+        "dimension": "availability",
+        "status": "healthy",
+        "value": 0.5,
+        "unit": "ms",
+        "offset_minutes": -1,
+        "window_duration_seconds": 60,
+        "scope": "synthetic_probe",
+        "reliability": "verified",
+        "details": "Cache cluster ping responds in 0.5ms with 0% memory pressure."
+      }
+    ],
+    "operational_events": [
+      {
+        "signal": "db_cpu_exhaustion_event",
+        "component": "database",
+        "dimension": "latency",
+        "status": "degraded",
+        "value": 99.4,
+        "unit": "percent",
+        "offset_minutes": -10,
+        "window_duration_seconds": 600,
+        "scope": "resource_monitor",
+        "reliability": "verified",
+        "details": "CloudWatch alarm triggered: Database primary CPU reached sustained 99.4% for > 10 minutes."
+      }
+    ]
+  }
+}

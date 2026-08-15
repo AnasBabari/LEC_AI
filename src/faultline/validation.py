@@ -48,9 +48,9 @@ class ReportValidator:
         if not result.evidence:
             raise ValidationError("Evidence ledger in report is empty.")
 
-        reported_at_str = result.incident.get("reported_at")
-        if reported_at_str:
-            t0 = datetime.fromisoformat(reported_at_str.replace("Z", "+00:00"))
+        incident_at_str = result.incident.get("incident_at") or result.incident.get("reported_at")
+        if incident_at_str:
+            t0 = datetime.fromisoformat(incident_at_str.replace("Z", "+00:00"))
         else:
             t0 = datetime.now(timezone.utc)
 
@@ -96,7 +96,9 @@ class ReportValidator:
             cited_obs = [obs for obs in result.evidence if obs.id in actual_conf.evidence_ids]
             cited_groups = {obs.source_group for obs in cited_obs}
             if len(cited_groups) < 2:
-                raise ValidationError(f"Conflict {actual_conf.id} does not span independent source groups: {cited_groups}")
+                raise ValidationError(
+                    f"Conflict {actual_conf.id} does not span independent source groups: {cited_groups}"
+                )
 
         # 5. Deterministic Reconstruction of Hypotheses from Evidence Ledger & Policy (Finding 12)
         authoritative_hypotheses = self.evaluator.evaluate_hypotheses(
@@ -218,6 +220,15 @@ class ReportValidator:
         if not has_positive_evidence:
             raise ValidationError("No hypothesis has positive net evidence score; insufficient causal basis.")
 
+        # Invariant: Hypotheses must be strictly ordered by net_evidence_score descending
+        for i in range(len(result.hypotheses) - 1):
+            if result.hypotheses[i].net_evidence_score < result.hypotheses[i + 1].net_evidence_score:
+                raise ValidationError(
+                    f"Hypotheses are not strictly ordered by net evidence score descending: "
+                    f"'{result.hypotheses[i].cause_code.value}' ({result.hypotheses[i].net_evidence_score}) vs "
+                    f"'{result.hypotheses[i + 1].cause_code.value}' ({result.hypotheses[i + 1].net_evidence_score})."
+                )
+
         # 6. Recompute Strategy Ranking from Reconstructed Hypotheses (Deterministic Authority)
         expected_ranking = self.ranker.rank_strategies(authoritative_hypotheses)
         if len(result.strategy_ranking) != len(expected_ranking):
@@ -232,6 +243,16 @@ class ReportValidator:
                     f"Strategy ranking mismatch at position {idx + 1}: reported '{actual.strategy_id}', "
                     f"expected authoritative strategy '{expected.strategy_id}'."
                 )
+            if actual.name != expected.name:
+                raise ValidationError(
+                    f"Strategy {actual.strategy_id} name mismatch: reported '{actual.name}', "
+                    f"expected authoritative name '{expected.name}'."
+                )
+            if actual.description != expected.description:
+                raise ValidationError(
+                    f"Strategy {actual.strategy_id} description mismatch: reported '{actual.description}', "
+                    f"expected authoritative description '{expected.description}'."
+                )
             if abs(actual.final_score - expected.final_score) > 0.05:
                 raise ValidationError(
                     f"Strategy score mismatch for {actual.strategy_id}: reported {actual.final_score}, "
@@ -241,6 +262,41 @@ class ReportValidator:
                 raise ValidationError(
                     f"Strategy impact score mismatch for {actual.strategy_id}: reported {actual.expected_impact}, "
                     f"expected {expected.expected_impact}."
+                )
+            if abs(actual.safety - expected.safety) > 0.05:
+                raise ValidationError(
+                    f"Strategy safety score mismatch for {actual.strategy_id}: reported {actual.safety}, "
+                    f"expected {expected.safety}."
+                )
+            if abs(actual.speed - expected.speed) > 0.05:
+                raise ValidationError(
+                    f"Strategy speed score mismatch for {actual.strategy_id}: reported {actual.speed}, "
+                    f"expected {expected.speed}."
+                )
+            if abs(actual.affordability - expected.affordability) > 0.05:
+                raise ValidationError(
+                    f"Strategy affordability score mismatch for {actual.strategy_id}: reported {actual.affordability}, "
+                    f"expected {expected.affordability}."
+                )
+            if actual.risk_notes != expected.risk_notes:
+                raise ValidationError(
+                    f"Strategy {actual.strategy_id} risk_notes mismatch: reported '{actual.risk_notes}', "
+                    f"expected '{expected.risk_notes}'."
+                )
+            if actual.reversibility != expected.reversibility:
+                raise ValidationError(
+                    f"Strategy {actual.strategy_id} reversibility mismatch: reported '{actual.reversibility}', "
+                    f"expected '{expected.reversibility}'."
+                )
+            if expected.suggested_command and actual.suggested_command != expected.suggested_command:
+                raise ValidationError(
+                    f"Strategy {actual.strategy_id} suggested_command mismatch: reported '{actual.suggested_command}', "
+                    f"expected '{expected.suggested_command}'."
+                )
+            if expected.preconditions and actual.preconditions != expected.preconditions:
+                raise ValidationError(
+                    f"Strategy {actual.strategy_id} preconditions mismatch: reported {actual.preconditions}, "
+                    f"expected {expected.preconditions}."
                 )
             if actual.rank != (idx + 1):
                 raise ValidationError(
@@ -316,7 +372,9 @@ class ReportValidator:
                 raise ValidationError(f"Structured grounding references non-existent evidence ID: {ref_eid}")
 
         if expected_conflict_ids and not g.referenced_conflict_ids:
-            raise ValidationError("Structured grounding narrative must reference at least one genuine conflict when conflicts exist.")
+            raise ValidationError(
+                "Structured grounding narrative must reference at least one genuine conflict when conflicts exist."
+            )
 
         if g.alternative_strategy_id != alt_strategy.strategy_id:
             raise ValidationError(
@@ -393,7 +451,12 @@ class ReportValidator:
         # Grounding check: ensure narrative mentions at least one component, conflict ID, or evidence ID
         detected_conflict_ids = {c.id.lower() for c in result.conflicts}
         detected_evidence_ids = {eid.lower() for c in result.conflicts for eid in c.evidence_ids}
-        detected_components = {c.component.value.lower() for c in result.conflicts}
+        detected_components = (
+            {c.component.value.lower() for c in result.conflicts}
+            | {c.component.value.lower().replace("_", " ") for c in result.conflicts}
+            | {obs.component.value.lower() for obs in result.evidence}
+            | {obs.component.value.lower().replace("_", " ") for obs in result.evidence}
+        )
         contra_lower = contradiction_text.lower()
         has_id_ref = any(cid in contra_lower for cid in detected_conflict_ids | detected_evidence_ids)
         has_comp_ref = any(comp in contra_lower for comp in detected_components)
@@ -419,6 +482,13 @@ class ReportValidator:
             raise ValidationError(
                 f"Execution command mismatch: reported '{result.execution.suggested_command}', "
                 f"expected '{expected_cmd}' for strategy {top_strategy.strategy_id}."
+            )
+
+        expected_preconditions = winning_strat_def.get("preconditions", [])
+        if result.execution.safety_preconditions != expected_preconditions:
+            raise ValidationError(
+                f"Execution preconditions mismatch: reported {result.execution.safety_preconditions}, "
+                f"expected {expected_preconditions} for strategy {top_strategy.strategy_id}."
             )
 
         return True

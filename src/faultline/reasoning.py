@@ -64,19 +64,12 @@ class ConflictDetector:
         conflicts: list[Conflict] = []
         conflict_idx = 1
 
-        # Group observations by (component, dimension_family)
-        # Latency and query efficiency are in the latency/performance family
-        def get_dimension_family(dim: HealthDimension) -> str:
-            if dim in (HealthDimension.LATENCY, HealthDimension.QUERY_EFFICIENCY):
-                return "performance"
-            return dim.value
-
-        by_comp_dim: dict[tuple[ComponentEnum, str], list[EvidenceObservation]] = {}
+        # Group observations by component
+        by_component: dict[ComponentEnum, list[EvidenceObservation]] = {}
         for obs in observations:
-            family = get_dimension_family(obs.dimension)
-            by_comp_dim.setdefault((obs.component, family), []).append(obs)
+            by_component.setdefault(obs.component, []).append(obs)
 
-        for (component, _), obs_list in by_comp_dim.items():
+        for component, obs_list in by_component.items():
             # Compare pairs from DIFFERENT source groups
             for i in range(len(obs_list)):
                 for j in range(i + 1, len(obs_list)):
@@ -137,9 +130,7 @@ class ConflictDetector:
                 )
             else:
                 headline = f"Scope Tension on {obs_a.component.value}: '{obs_a.scope}' vs '{obs_b.scope}'"
-                op_implication = (
-                    f"Both observations reflect valid measurements under different operational scopes ('{obs_a.scope}' vs '{obs_b.scope}')."
-                )
+                op_implication = f"Both observations reflect valid measurements under different operational scopes ('{obs_a.scope}' vs '{obs_b.scope}')."
 
             return Conflict(
                 id=conflict_id,
@@ -443,6 +434,87 @@ class EvidenceEvaluator:
             errors.append(f"Hypothesis {draft.cause_code.value} lacks any matching supporting signal rule citations")
 
         return (len(errors) == 0, errors)
+
+    def sanitize_draft_citations(
+        self,
+        draft: HypothesisDraft,
+        observations: list[EvidenceObservation],
+    ) -> tuple[Optional[HypothesisDraft], list[str]]:
+        """Categorize draft observations into supporting, opposing, and contextual based on policy rules."""
+        obs_map = {obs.id: obs for obs in observations}
+        rules = self.policy.cause_rules.get(draft.cause_code, [])
+        errors: list[str] = []
+        clean_sup: list[str] = []
+        clean_opp: list[str] = []
+        raw_ctx: list[str] = []
+
+        for sup_id in draft.supporting_evidence_ids:
+            obs = obs_map.get(sup_id)
+            if not obs:
+                errors.append(f"Non-existent supporting citation '{sup_id}' for {draft.cause_code.value}")
+                continue
+            matched = self._match_rule(obs, rules)
+            if not matched:
+                if sup_id not in raw_ctx:
+                    raw_ctx.append(sup_id)
+            elif matched.get("relationship") == "supports":
+                if sup_id not in clean_sup:
+                    clean_sup.append(sup_id)
+            elif matched.get("relationship") == "opposes":
+                if sup_id not in clean_opp:
+                    clean_opp.append(sup_id)
+
+        for opp_id in draft.opposing_evidence_ids:
+            obs = obs_map.get(opp_id)
+            if not obs:
+                errors.append(f"Non-existent opposing citation '{opp_id}' for {draft.cause_code.value}")
+                continue
+            matched = self._match_rule(obs, rules)
+            if matched and matched.get("relationship") == "opposes":
+                if opp_id not in clean_opp:
+                    clean_opp.append(opp_id)
+            elif matched and matched.get("relationship") == "supports":
+                if opp_id not in clean_sup:
+                    clean_sup.append(opp_id)
+            elif opp_id not in raw_ctx:
+                raw_ctx.append(opp_id)
+
+        for ctx_id in draft.contextual_evidence_ids:
+            obs = obs_map.get(ctx_id)
+            if not obs:
+                continue
+            matched = self._match_rule(obs, rules)
+            if matched and matched.get("relationship") == "supports":
+                if ctx_id not in clean_sup:
+                    clean_sup.append(ctx_id)
+            elif matched and matched.get("relationship") == "opposes":
+                if ctx_id not in clean_opp:
+                    clean_opp.append(ctx_id)
+            elif ctx_id not in raw_ctx:
+                raw_ctx.append(ctx_id)
+
+        clean_ctx = [
+            c
+            for c in raw_ctx
+            if c in obs_map
+            and c not in clean_sup
+            and c not in clean_opp
+            and not self._match_rule(obs_map[c], rules)
+        ]
+
+        if errors or not clean_sup:
+            return None, errors or [f"No valid supporting citations for {draft.cause_code.value}"]
+
+        cleaned = HypothesisDraft(
+            cause_code=draft.cause_code,
+            summary=draft.summary,
+            causal_chain=draft.causal_chain,
+            supporting_evidence_ids=clean_sup,
+            opposing_evidence_ids=clean_opp,
+            contextual_evidence_ids=clean_ctx,
+            unresolved_uncertainties=draft.unresolved_uncertainties,
+        )
+        return cleaned, []
 
     def _match_rule(
         self,

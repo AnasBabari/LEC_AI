@@ -82,6 +82,22 @@
           "component": "database",
           "dimension": "latency",
           "statuses": ["degraded", "failed"],
+          "scope": "synthetic_probe",
+          "relationship": "supports",
+          "directness": "direct"
+        },
+        {
+          "component": "database",
+          "dimension": "latency",
+          "statuses": ["degraded", "failed"],
+          "scope": "resource_monitor",
+          "relationship": "supports",
+          "directness": "direct"
+        },
+        {
+          "component": "database",
+          "dimension": "latency",
+          "statuses": ["degraded", "failed"],
           "scope": "workload",
           "relationship": "supports",
           "directness": "indirect"

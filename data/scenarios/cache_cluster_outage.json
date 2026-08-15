@@ -1,0 +1,87 @@
+{
+  "id": "cache_cluster_outage",
+  "title": "Cache Cluster Process Crash with Cascading Database Load",
+  "incident_at": "2026-08-14T15:00:00Z",
+  "description": "Cache cluster nodes crashed due to out-of-memory errors, driving cache availability to 0% and causing 100% cache-miss traffic to cascade directly into the primary database.",
+  "affected_components": ["api_gateway", "cache", "database"],
+  "initial_fault_report": {
+    "source": "pagerduty_alert",
+    "severity": "CRITICAL",
+    "headline": "Cache Cluster Unreachable & Database Latency Degradation (2100ms)",
+    "reported_at": "2026-08-14T15:00:00Z",
+    "details": "Cache connection refused across all application nodes; DB connection pool surging."
+  },
+  "diagnostics": {
+    "telemetry": [
+      {
+        "signal": "cache_cluster_availability",
+        "component": "cache",
+        "dimension": "availability",
+        "status": "failed",
+        "value": 0.0,
+        "unit": "percent",
+        "offset_minutes": -1,
+        "window_duration_seconds": 300,
+        "scope": "workload",
+        "reliability": "aggregated",
+        "details": "Application cache client reports 100% connection failures and 0% availability across all cache pools."
+      },
+      {
+        "signal": "db_workload_connection_saturation",
+        "component": "database",
+        "dimension": "latency",
+        "status": "degraded",
+        "value": 88.0,
+        "unit": "percent",
+        "offset_minutes": -1,
+        "window_duration_seconds": 300,
+        "scope": "workload",
+        "reliability": "aggregated",
+        "details": "Database connection pool saturated at 88% capacity from unbuffered direct queries."
+      }
+    ],
+    "health_probe": [
+      {
+        "signal": "cache_cluster_ping",
+        "component": "cache",
+        "dimension": "availability",
+        "status": "failed",
+        "value": 0.0,
+        "unit": "ping",
+        "offset_minutes": -1,
+        "window_duration_seconds": 60,
+        "scope": "synthetic_probe",
+        "reliability": "verified",
+        "details": "Direct TCP ping to cache cluster failed with connection refused on port 6379."
+      },
+      {
+        "signal": "db_synthetic_direct_probe",
+        "component": "database",
+        "dimension": "latency",
+        "status": "healthy",
+        "value": 1.9,
+        "unit": "ms",
+        "offset_minutes": -1,
+        "window_duration_seconds": 60,
+        "scope": "synthetic_probe",
+        "reliability": "verified",
+        "details": "Direct synthetic query probe on database responds in 1.9ms; DB storage and engine are healthy."
+      }
+    ],
+    "operational_events": [
+      {
+        "signal": "cache_node_crash_event",
+        "component": "cache",
+        "dimension": "availability",
+        "status": "failed",
+        "value": 137.0,
+        "unit": "exit_code",
+        "offset_minutes": -8,
+        "window_duration_seconds": 600,
+        "scope": "process_lifecycle",
+        "reliability": "verified",
+        "details": "Kernel OOM killer terminated Redis cluster daemon process (code 137) due to memory threshold breach."
+      }
+    ]
+  }
+}

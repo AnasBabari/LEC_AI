@@ -1,26 +1,33 @@
-"""Unit tests for ReportValidator assertions and safety invariants."""
+from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
-from faultline.diagnostics import ScenarioRepository
+from faultline.diagnostics import EvidenceLedger, ScenarioRepository
 from faultline.gemini import FakeGeminiProvider
 from faultline.models import (
     AdvantageDimension,
+    ComponentEnum,
     ConflictType,
     EvaluatedHypothesis,
     EvidenceStrengthBand,
     FaultReport,
+    HealthDimension,
+    HealthStatus,
     HypothesisDraft,
     HypothesisDraftSet,
     InvalidModelOutputError,
     LifecycleState,
     ObservationEvidenceScore,
     PolicyConfig,
+    ReliabilityLevel,
     RootCauseCode,
+    SourceGroup,
+    StrategyConfig,
 )
 from faultline.orchestrator import IncidentOrchestrator, OrchestratorError
-from faultline.reasoning import PolicyEngine, StrategyRanker
+from faultline.reasoning import EvidenceEvaluator, PolicyEngine, StrategyRanker
 from faultline.validation import ReportValidator, ValidationError
 
 
@@ -117,7 +124,10 @@ def test_validator_rejects_hallucinated_alien_contradiction_analysis() -> None:
     )
 
     validator = ReportValidator()
-    with pytest.raises(ValidationError, match="not semantically grounded|denial of verified diagnostic conflicts|does not reference any affected components"):
+    with pytest.raises(
+        ValidationError,
+        match="not semantically grounded|denial of verified diagnostic conflicts|does not reference any affected components",
+    ):
         validator.validate(result)
 
 
@@ -168,9 +178,7 @@ def test_orchestrator_rejects_fabricated_model_citation() -> None:
             )
 
     orchestrator = IncidentOrchestrator(provider=MaliciousModelProvider())
-    with pytest.raises(
-        (OrchestratorError, InvalidModelOutputError)
-    ):
+    with pytest.raises((OrchestratorError, InvalidModelOutputError)):
         orchestrator.analyze_scenario("cache_invalidation_lag")
 
 
@@ -346,7 +354,10 @@ def test_validator_rejects_inverted_supporting_opposing_citation() -> None:
     result.hypotheses[0].supporting_observations.append(inverted_score)
 
     validator = ReportValidator()
-    with pytest.raises(ValidationError, match=r"reports unexpected supporting evidence|policy defines it as (opposes|unrelated)|supporting observations count mismatch"):
+    with pytest.raises(
+        ValidationError,
+        match=r"reports unexpected supporting evidence|policy defines it as (opposes|unrelated)|supporting observations count mismatch",
+    ):
         validator.validate(result)
 
 
@@ -423,7 +434,10 @@ def test_orchestrator_discards_draft_with_empty_citations() -> None:
                         cause_code=RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
                         summary="Consumer worker stalled.",
                         causal_chain=["Worker crashed", "Queue piled up"],
-                        supporting_evidence_ids=["EV-002", "EV-007"],  # Valid citations (cache hit ratio + queue backlog)
+                        supporting_evidence_ids=[
+                            "EV-002",
+                            "EV-007",
+                        ],  # Valid citations (cache hit ratio + queue backlog)
                         opposing_evidence_ids=[],
                         unresolved_uncertainties=[],
                     ),
@@ -561,7 +575,8 @@ def test_state_machine_transition_trace_from_to_states() -> None:
     result = orchestrator.analyze_scenario("cache_invalidation_lag")
 
     state_transitions = [
-        item for item in result.investigation_trace
+        item
+        for item in result.investigation_trace
         if item.action_type == "state_change" and "from_state" in item.details
     ]
     assert len(state_transitions) >= 5
@@ -683,3 +698,165 @@ def test_orchestrator_validating_to_validated_state_transition() -> None:
     assert LifecycleState.VALIDATED.value in states_logged
 
 
+def test_strategy_config_rejects_incomplete_or_extra_causes() -> None:
+    """StrategyConfig strictly enforces defining effectiveness for ALL 6 RootCauseCodes."""
+    policy = PolicyEngine()
+    strat_dict = policy.policy_data["strategies"]["RESTART_CACHE"]
+    strat_copy = dict(strat_dict)
+    strat_copy["effectiveness_by_cause"] = dict(strat_dict["effectiveness_by_cause"])
+
+    # Case 1: Missing a cause
+    del strat_copy["effectiveness_by_cause"]["REPLICA_LAG"]
+    with pytest.raises(ValueError, match="effectiveness_by_cause must define values for all root causes"):
+        StrategyConfig.model_validate(strat_copy)
+
+    # Case 2: Extra unknown cause
+    strat_copy_extra = dict(strat_dict)
+    strat_copy_extra["effectiveness_by_cause"] = dict(strat_dict["effectiveness_by_cause"])
+    strat_copy_extra["effectiveness_by_cause"]["UNKNOWN_ALIEN_CAUSE"] = 50.0
+    with pytest.raises(ValueError, match="effectiveness_by_cause must define values for all root causes"):
+        StrategyConfig.model_validate(strat_copy_extra)
+
+
+def test_validator_rejects_tampered_strategy_fields() -> None:
+    """ReportValidator detects and rejects tampering in any authoritative strategy field."""
+    orchestrator = IncidentOrchestrator(provider=FakeGeminiProvider())
+    validator = ReportValidator()
+
+    # 1. Tampered strategy name
+    res1 = orchestrator.analyze_scenario("cache_invalidation_lag")
+    res1.strategy_ranking[0].name = "Arbitrary Name"
+    with pytest.raises(ValidationError, match="name mismatch"):
+        validator.validate(res1)
+
+    # 2. Tampered strategy description
+    res2 = orchestrator.analyze_scenario("cache_invalidation_lag")
+    res2.strategy_ranking[0].description = "Fabricated description."
+    with pytest.raises(ValidationError, match="description mismatch"):
+        validator.validate(res2)
+
+    # 3. Tampered strategy safety
+    res3 = orchestrator.analyze_scenario("cache_invalidation_lag")
+    res3.strategy_ranking[0].safety = 99.9
+    with pytest.raises(ValidationError, match="safety score mismatch"):
+        validator.validate(res3)
+
+    # 4. Tampered strategy speed
+    res4 = orchestrator.analyze_scenario("cache_invalidation_lag")
+    res4.strategy_ranking[0].speed = 1.0
+    with pytest.raises(ValidationError, match="speed score mismatch"):
+        validator.validate(res4)
+
+    # 5. Tampered strategy affordability
+    res5 = orchestrator.analyze_scenario("cache_invalidation_lag")
+    res5.strategy_ranking[0].affordability = 0.0
+    with pytest.raises(ValidationError, match="affordability score mismatch"):
+        validator.validate(res5)
+
+    # 6. Tampered strategy risk_notes
+    res6 = orchestrator.analyze_scenario("cache_invalidation_lag")
+    res6.strategy_ranking[0].risk_notes = "Zero risks detected."
+    with pytest.raises(ValidationError, match="risk_notes mismatch"):
+        validator.validate(res6)
+
+    # 7. Tampered strategy reversibility
+    res7 = orchestrator.analyze_scenario("cache_invalidation_lag")
+    res7.strategy_ranking[0].reversibility = "irreversible"
+    with pytest.raises(ValidationError, match="reversibility mismatch"):
+        validator.validate(res7)
+
+    # 8. Tampered execution safety preconditions
+    res8 = orchestrator.analyze_scenario("cache_invalidation_lag")
+    res8.execution.safety_preconditions = ["Fabricated precondition"]
+    with pytest.raises(ValidationError, match="Execution preconditions mismatch"):
+        validator.validate(res8)
+
+
+def test_validator_rejects_unsorted_hypotheses() -> None:
+    """ReportValidator rejects hypothesis lists that are not sorted descending by net_evidence_score."""
+    orchestrator = IncidentOrchestrator(provider=FakeGeminiProvider())
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+    assert len(result.hypotheses) >= 2
+
+    # Swap first two hypotheses
+    result.hypotheses[0], result.hypotheses[1] = result.hypotheses[1], result.hypotheses[0]
+    validator = ReportValidator()
+    with pytest.raises(ValidationError, match="Hypotheses are not strictly ordered by net evidence score descending"):
+        validator.validate(result)
+
+
+def test_source_group_cap_enforcement_and_exclusion_flags() -> None:
+    """EvidenceEvaluator strictly caps supporting and opposing observations at 1 dominant per source group."""
+    policy = PolicyEngine()
+    evaluator = EvidenceEvaluator(policy)
+
+    t0 = datetime(2026, 8, 13, 10, 0, 0, tzinfo=timezone.utc)
+    ledger = EvidenceLedger(incident_at=t0)
+
+    # Add two telemetry observations supporting QUEUE BACKLOG
+    ledger.append_observation(
+        source_group=SourceGroup.TELEMETRY,
+        source="query_telemetry",
+        component=ComponentEnum.MESSAGE_QUEUE,
+        signal="message_queue_backlog_count",
+        dimension=HealthDimension.BACKLOG,
+        status=HealthStatus.FAILED,
+        value=45000.0,
+        unit="items",
+        observed_at=t0,
+        window_duration_seconds=60,
+        scope="workload",
+        reliability=ReliabilityLevel.VERIFIED,
+        details="Massive backlog",
+    )
+    ledger.append_observation(
+        source_group=SourceGroup.TELEMETRY,
+        source="query_telemetry",
+        component=ComponentEnum.MESSAGE_QUEUE,
+        signal="consumer_heartbeat_age_seconds",
+        dimension=HealthDimension.AVAILABILITY,
+        status=HealthStatus.FAILED,
+        value=600.0,
+        unit="seconds",
+        observed_at=t0,
+        window_duration_seconds=60,
+        scope="workload",
+        reliability=ReliabilityLevel.VERIFIED,
+        details="Stalled consumer",
+    )
+
+    evaluated = evaluator.evaluate_hypotheses(
+        candidate_codes=[RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED],
+        ledger=ledger,
+    )
+    assert len(evaluated) == 1
+    hyp = evaluated[0]
+    # Two supporting observations from same source group 'telemetry': 1 active, 1 capped
+    assert len(hyp.supporting_observations) == 2
+    active_obs = [o for o in hyp.supporting_observations if not o.excluded_by_source_cap]
+    capped_obs = [o for o in hyp.supporting_observations if o.excluded_by_source_cap]
+    assert len(active_obs) == 1
+    assert len(capped_obs) == 1
+    assert hyp.supporting_score == active_obs[0].total_strength
+
+
+def test_orchestrator_preserves_distinct_incident_and_reported_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """IncidentOrchestrator preserves distinct alert reported_at while anchoring freshness to incident_at."""
+    repo = ScenarioRepository()
+    scenario = repo.get_scenario("cache_invalidation_lag")
+    custom_scenario = dict(scenario)
+    custom_scenario["initial_fault_report"] = dict(scenario["initial_fault_report"])
+    # Set reported_at 2 minutes after incident_at
+    custom_scenario["initial_fault_report"]["reported_at"] = "2026-08-13T10:02:00Z"
+    custom_scenario["incident_at"] = "2026-08-13T10:00:00Z"
+
+    mock_repo = MagicMock()
+    mock_repo.get_scenario.return_value = custom_scenario
+    mock_repo.list_scenarios.return_value = repo.list_scenarios()
+
+    orchestrator = IncidentOrchestrator(provider=FakeGeminiProvider(), scenario_repo=mock_repo)
+    result = orchestrator.analyze_scenario("cache_invalidation_lag")
+
+    assert result.validation_passed is True
+    assert result.incident["reported_at"] == "2026-08-13T10:02:00+00:00"
+    assert result.incident["incident_at"] == "2026-08-13T10:00:00+00:00"

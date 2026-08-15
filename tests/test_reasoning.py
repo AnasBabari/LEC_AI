@@ -304,7 +304,9 @@ def test_hypothesis_draft_overlap_validation() -> None:
         )
 
     # Overlap between supporting and opposing
-    with pytest.raises(ValidationError, match=r"cannot be simultaneously supporting and opposing|cannot appear in both"):
+    with pytest.raises(
+        ValidationError, match=r"cannot be simultaneously supporting and opposing|cannot appear in both"
+    ):
         HypothesisDraft(
             cause_code=RootCauseCode.TRAFFIC_SURGE,
             summary="test",
@@ -432,7 +434,9 @@ def test_orchestrator_semantic_repair_flow() -> None:
                 ]
             )
 
-        def repair_hypotheses(self, incident, evidence_ledger, allowed_causes, previous_drafts, validation_errors, session=None):
+        def repair_hypotheses(
+            self, incident, evidence_ledger, allowed_causes, previous_drafts, validation_errors, session=None
+        ):
             self.repair_called = True
             # Return valid drafts on repair
             return super().synthesise_hypotheses(incident, evidence_ledger, allowed_causes, session=session)
@@ -443,4 +447,3 @@ def test_orchestrator_semantic_repair_flow() -> None:
 
     assert provider.repair_called is True
     assert result.validation_passed is True
-

@@ -79,3 +79,70 @@ def test_orchestrator_index_regression_run() -> None:
     assert result.strategy_ranking[0].strategy_id == "REBUILD_DATABASE_INDEX"
     assert result.strategy_ranking[0].rank == 1
     assert result.recommendation.winning_strategy_id == "REBUILD_DATABASE_INDEX"
+
+
+def test_orchestrator_flash_sale_surge_run() -> None:
+    """Execute end-to-end incident investigation on flash_sale_surge scenario."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+
+    result = orchestrator.analyze_scenario("flash_sale_surge")
+
+    assert result.state == LifecycleState.VALIDATED
+    assert result.validation_passed is True
+    assert len(result.conflicts) >= 1
+
+    # Top hypothesis should be TRAFFIC_SURGE
+    assert result.hypotheses[0].cause_code.value == "TRAFFIC_SURGE"
+    assert result.strategy_ranking[0].strategy_id == "THROTTLE_TRAFFIC"
+    assert result.recommendation.winning_strategy_id == "THROTTLE_TRAFFIC"
+
+
+def test_orchestrator_cache_cluster_outage_run() -> None:
+    """Execute end-to-end incident investigation on cache_cluster_outage scenario."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+
+    result = orchestrator.analyze_scenario("cache_cluster_outage")
+
+    assert result.state == LifecycleState.VALIDATED
+    assert result.validation_passed is True
+    assert len(result.conflicts) >= 1
+
+    # Top hypothesis should be CACHE_NODE_FAILURE
+    assert result.hypotheses[0].cause_code.value == "CACHE_NODE_FAILURE"
+    assert result.strategy_ranking[0].strategy_id == "RESTART_CACHE"
+    assert result.recommendation.winning_strategy_id == "RESTART_CACHE"
+
+
+def test_orchestrator_replica_replication_lag_run() -> None:
+    """Execute end-to-end incident investigation on replica_replication_lag scenario."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+
+    result = orchestrator.analyze_scenario("replica_replication_lag")
+
+    assert result.state == LifecycleState.VALIDATED
+    assert result.validation_passed is True
+    assert len(result.conflicts) >= 1
+
+    # Top hypothesis should be REPLICA_LAG
+    assert result.hypotheses[0].cause_code.value == "REPLICA_LAG"
+    assert result.strategy_ranking[0].rank == 1
+
+
+def test_orchestrator_database_capacity_exhaustion_run() -> None:
+    """Execute end-to-end incident investigation on database_capacity_exhaustion scenario."""
+    provider = FakeGeminiProvider()
+    orchestrator = IncidentOrchestrator(provider=provider)
+
+    result = orchestrator.analyze_scenario("database_capacity_exhaustion")
+
+    assert result.state == LifecycleState.VALIDATED
+    assert result.validation_passed is True
+    assert len(result.conflicts) >= 1
+
+    # Top hypothesis should be DATABASE_CAPACITY_DEGRADATION
+    assert result.hypotheses[0].cause_code.value == "DATABASE_CAPACITY_DEGRADATION"
+    assert result.strategy_ranking[0].strategy_id == "THROTTLE_TRAFFIC"
+    assert result.recommendation.winning_strategy_id == "THROTTLE_TRAFFIC"

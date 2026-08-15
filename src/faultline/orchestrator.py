@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from faultline.diagnostics import DiagnosticService, EvidenceLedger, ScenarioRepository
-from faultline.gemini import GeminiProvider, LLMProviderProtocol
+from faultline.gemini import FakeGeminiProvider, GeminiProvider, LLMProviderProtocol
 from faultline.models import (
     AdvantageDimension,
     AnalysisResult,
@@ -110,7 +110,9 @@ class IncidentOrchestrator:
                 )
             )
 
-        def transition_to(new_state: LifecycleState, summary: Optional[str] = None, details: Optional[dict[str, Any]] = None) -> None:
+        def transition_to(
+            new_state: LifecycleState, summary: Optional[str] = None, details: Optional[dict[str, Any]] = None
+        ) -> None:
             nonlocal current_state
             if new_state not in ALLOWED_TRANSITIONS.get(current_state, set()):
                 raise OrchestratorError(f"Illegal state transition from {current_state.value} to {new_state.value}")
@@ -138,11 +140,13 @@ class IncidentOrchestrator:
             diagnostic_service = DiagnosticService(scenario_data, ledger)
 
             raw_fault = scenario_data["initial_fault_report"]
+            raw_reported_at = raw_fault.get("reported_at")
+            reported_at = DiagnosticService._parse_iso_timestamp(raw_reported_at) if raw_reported_at else incident_at
             fault_report = FaultReport(
                 source=raw_fault["source"],
                 severity=raw_fault["severity"],
                 headline=raw_fault["headline"],
-                reported_at=incident_at,
+                reported_at=reported_at,
                 details=raw_fault["details"],
             )
 
@@ -150,7 +154,13 @@ class IncidentOrchestrator:
                 0,
                 "state_change",
                 f"Incident alert received: {fault_report.headline} (Severity: {fault_report.severity})",
-                details={"scenario_id": scenario_id, "run_id": run_id, "state": current_state.value},
+                details={
+                    "scenario_id": scenario_id,
+                    "run_id": run_id,
+                    "state": current_state.value,
+                    "incident_at": incident_at.isoformat(),
+                    "reported_at": reported_at.isoformat(),
+                },
             )
 
             # 2. State: COLLECTING
@@ -218,27 +228,53 @@ class IncidentOrchestrator:
                 for tool_call in action_batch.tool_calls:
                     if total_tool_attempts >= self.max_tool_attempts:
                         break
-                    tool_name_str = tool_call.tool_name.value if isinstance(tool_call.tool_name, DiagnosticToolName) else str(tool_call.tool_name)
-                    comp_str = tool_call.component.value if isinstance(tool_call.component, ComponentEnum) else str(tool_call.component)
-                    dim_str = tool_call.dimension.value if isinstance(tool_call.dimension, HealthDimension) else str(tool_call.dimension)
+                    tool_name_str = (
+                        tool_call.tool_name.value
+                        if isinstance(tool_call.tool_name, DiagnosticToolName)
+                        else str(tool_call.tool_name)
+                    )
+                    comp_str = (
+                        tool_call.component.value
+                        if isinstance(tool_call.component, ComponentEnum)
+                        else str(tool_call.component)
+                    )
+                    dim_str = (
+                        tool_call.dimension.value
+                        if isinstance(tool_call.dimension, HealthDimension)
+                        else str(tool_call.dimension)
+                    )
                     tool_sig = f"{tool_name_str}:{comp_str}:{dim_str}"
                     if tool_sig in executed_tool_signatures:
                         continue
                     executed_tool_signatures.add(tool_sig)
-                    execute_tool(tool_name_str, {"component": tool_call.component, "dimension": tool_call.dimension}, round_idx)
+                    execute_tool(
+                        tool_name_str, {"component": tool_call.component, "dimension": tool_call.dimension}, round_idx
+                    )
 
                 if action_batch.investigation_complete and len(ledger.successful_source_groups) >= 3:
-                    record_trace(round_idx, "collection_complete", "Agent concluded multi-source evidence collection is sufficient across all domains.")
+                    record_trace(
+                        round_idx,
+                        "collection_complete",
+                        "Agent concluded multi-source evidence collection is sufficient across all domains.",
+                    )
                     break
 
             if len(ledger.successful_source_groups) < 3:
-                missing_groups = {SourceGroup.TELEMETRY, SourceGroup.HEALTH_PROBE, SourceGroup.OPERATIONAL_EVENTS} - ledger.successful_source_groups
+                missing_groups = {
+                    SourceGroup.TELEMETRY,
+                    SourceGroup.HEALTH_PROBE,
+                    SourceGroup.OPERATIONAL_EVENTS,
+                } - ledger.successful_source_groups
                 for missing_group in missing_groups:
                     check_deadline()
-                    if total_tool_attempts >= self.max_tool_attempts:
-                        break
                     broad_tool = SOURCE_GROUP_TO_TOOL[missing_group]
                     execute_tool(broad_tool.value, {}, self.max_rounds)
+
+            # If no conflicts detected yet, execute broad health probes and telemetry to surface scope tensions
+            if not ConflictDetector.detect_conflicts(ledger):
+                execute_tool(DiagnosticToolName.RUN_HEALTH_PROBES.value, {}, self.max_rounds)
+                if not ConflictDetector.detect_conflicts(ledger):
+                    execute_tool(DiagnosticToolName.QUERY_TELEMETRY.value, {}, self.max_rounds)
 
             if len(ledger.successful_source_groups) < 2:
                 raise InsufficientEvidenceError("Failed to collect evidence from at least 2 independent source groups.")
@@ -253,37 +289,70 @@ class IncidentOrchestrator:
             transition_to(LifecycleState.HYPOTHESIZING, "Synthesizing and validating candidate root-cause hypotheses.")
             check_deadline()
             allowed_causes = list(RootCauseCode)
-            hypothesis_draft_set = self.provider.synthesise_hypotheses(incident=fault_report, evidence_ledger=ledger.get_observations(), allowed_causes=allowed_causes, session=session)
+            hypothesis_draft_set = self.provider.synthesise_hypotheses(
+                incident=fault_report,
+                evidence_ledger=ledger.get_observations(),
+                allowed_causes=allowed_causes,
+                session=session,
+            )
             evaluator = EvidenceEvaluator(self.policy)
             validated_drafts = []
             for draft in hypothesis_draft_set.hypotheses:
-                if draft.supporting_evidence_ids:
-                    is_valid, _ = evaluator.validate_hypothesis_citations(draft, ledger.get_observations())
-                    if is_valid:
-                        validated_drafts.append(draft)
+                cleaned, errs = evaluator.sanitize_draft_citations(draft, ledger.get_observations())
+                if cleaned and not errs:
+                    validated_drafts.append(cleaned)
 
             if len(validated_drafts) < 2:
                 validation_errors = []
                 for d in hypothesis_draft_set.hypotheses:
-                    _, errs = evaluator.validate_hypothesis_citations(d, ledger.get_observations())
+                    _, errs = evaluator.sanitize_draft_citations(d, ledger.get_observations())
                     if errs:
                         validation_errors.extend(errs)
                 try:
-                    repaired_set = self.provider.repair_hypotheses(incident=fault_report, evidence_ledger=ledger.get_observations(), allowed_causes=allowed_causes, previous_drafts=hypothesis_draft_set.hypotheses, validation_errors=validation_errors, session=session)
-                    validated_drafts = [d for d in repaired_set.hypotheses if d.supporting_evidence_ids and evaluator.validate_hypothesis_citations(d, ledger.get_observations())[0]]
+                    repaired_set = self.provider.repair_hypotheses(
+                        incident=fault_report,
+                        evidence_ledger=ledger.get_observations(),
+                        allowed_causes=allowed_causes,
+                        previous_drafts=hypothesis_draft_set.hypotheses,
+                        validation_errors=validation_errors,
+                        session=session,
+                    )
+                    validated_drafts = []
+                    for d in repaired_set.hypotheses:
+                        cleaned, errs = evaluator.sanitize_draft_citations(d, ledger.get_observations())
+                        if cleaned and not errs:
+                            validated_drafts.append(cleaned)
                 except (ModelUnavailableError, AnalysisTimeoutError, ModelAuthenticationError, ModelRequestError):
                     raise
                 except (InvalidModelOutputError, ValueError) as rep_err:
                     logger.warning(f"Semantic hypothesis repair failed: {rep_err}")
                 if len(validated_drafts) < 2:
-                    raise InvalidModelOutputError("Model failed to provide at least 2 valid grounded root-cause hypotheses.")
+                    raise InvalidModelOutputError(
+                        "Model failed to provide at least 2 valid grounded root-cause hypotheses."
+                    )
 
             # 5. State: SCORING
             transition_to(LifecycleState.SCORING, "Deterministically evaluating full cause catalogue.")
             check_deadline()
-            all_evaluated_hypotheses = evaluator.evaluate_hypotheses(candidate_codes=allowed_causes, ledger=ledger, draft_hypotheses=validated_drafts)
+            all_evaluated_hypotheses = evaluator.evaluate_hypotheses(
+                candidate_codes=allowed_causes, ledger=ledger, draft_hypotheses=validated_drafts
+            )
             top_cause = all_evaluated_hypotheses[0] if all_evaluated_hypotheses else None
-            record_trace(self.max_rounds + 3, "deterministic_scoring", f"Leading root cause is '{top_cause.name if top_cause else 'Unknown'}'", details={"evaluated_hypotheses": [{"cause_code": h.cause_code.value, "net_score": h.net_evidence_score, "band": h.strength_band.value} for h in all_evaluated_hypotheses]})
+            record_trace(
+                self.max_rounds + 3,
+                "deterministic_scoring",
+                f"Leading root cause is '{top_cause.name if top_cause else 'Unknown'}'",
+                details={
+                    "evaluated_hypotheses": [
+                        {
+                            "cause_code": h.cause_code.value,
+                            "net_score": h.net_evidence_score,
+                            "band": h.strength_band.value,
+                        }
+                        for h in all_evaluated_hypotheses
+                    ]
+                },
+            )
 
             # 6. State: REPORTING
             transition_to(LifecycleState.REPORTING, "Synthesizing repair strategy trade-offs and decision narrative.")
@@ -301,15 +370,32 @@ class IncidentOrchestrator:
             if not presented_hypotheses:
                 presented_hypotheses = all_evaluated_hypotheses[:4]
 
-            narrative_draft = self.provider.explain_decision(incident=fault_report, evidence_ledger=ledger.get_observations(), conflicts=conflicts, hypotheses=presented_hypotheses, strategy_ranking=ranked_strategies, winning_strategy=winning_strategy, top_alternative=fastest_alternative, session=session)
+            narrative_draft = self.provider.explain_decision(
+                incident=fault_report,
+                evidence_ledger=ledger.get_observations(),
+                conflicts=conflicts,
+                hypotheses=presented_hypotheses,
+                strategy_ranking=ranked_strategies,
+                winning_strategy=winning_strategy,
+                top_alternative=fastest_alternative,
+                session=session,
+            )
 
             win_val, alt_val, alt_dim = 0.0, 0.0, AdvantageDimension.NONE
             if fastest_alternative.speed > winning_strategy.speed:
                 alt_dim, alt_val, win_val = AdvantageDimension.SPEED, fastest_alternative.speed, winning_strategy.speed
             elif fastest_alternative.affordability > winning_strategy.affordability:
-                alt_dim, alt_val, win_val = AdvantageDimension.AFFORDABILITY, fastest_alternative.affordability, winning_strategy.affordability
+                alt_dim, alt_val, win_val = (
+                    AdvantageDimension.AFFORDABILITY,
+                    fastest_alternative.affordability,
+                    winning_strategy.affordability,
+                )
             elif fastest_alternative.safety > winning_strategy.safety:
-                alt_dim, alt_val, win_val = AdvantageDimension.SAFETY, fastest_alternative.safety, winning_strategy.safety
+                alt_dim, alt_val, win_val = (
+                    AdvantageDimension.SAFETY,
+                    fastest_alternative.safety,
+                    winning_strategy.safety,
+                )
 
             grounding = StructuredDecisionGrounding(
                 winning_strategy_id=winning_strategy.strategy_id,
@@ -327,8 +413,15 @@ class IncidentOrchestrator:
                 rejection_risk_factor=fastest_alternative.risk_notes or "Operational risk",
             )
 
+            exec_sum = narrative_draft.executive_summary
+            if (
+                winning_strategy.name.lower() not in exec_sum.lower()
+                and winning_strategy.strategy_id.lower() not in exec_sum.lower()
+            ):
+                exec_sum = f"Selected '{winning_strategy.name}' as the recommended action. {exec_sum}"
+
             explanation = DecisionExplanation(
-                executive_summary=narrative_draft.executive_summary,
+                executive_summary=exec_sum,
                 winning_strategy_id=winning_strategy.strategy_id,
                 trade_off_comparison=narrative_draft.trade_off_comparison,
                 grounded_contradiction_analysis=narrative_draft.grounded_contradiction_analysis,
@@ -355,7 +448,9 @@ class IncidentOrchestrator:
             # ---------------------------------------------------------------
             # 7. State: VALIDATING -> VALIDATED
             # ---------------------------------------------------------------
-            transition_to(LifecycleState.VALIDATING, "Validating complete report against safety and provenance invariants.")
+            transition_to(
+                LifecycleState.VALIDATING, "Validating complete report against safety and provenance invariants."
+            )
             check_deadline()
 
             result = AnalysisResult(
@@ -367,6 +462,7 @@ class IncidentOrchestrator:
                     "description": scenario_data["description"],
                     "headline": fault_report.headline,
                     "severity": fault_report.severity,
+                    "incident_at": incident_at.isoformat(),
                     "reported_at": fault_report.reported_at.isoformat(),
                     "details": fault_report.details,
                     "affected_components": scenario_data["affected_components"],

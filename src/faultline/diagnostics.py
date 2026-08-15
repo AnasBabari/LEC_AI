@@ -90,9 +90,7 @@ class EvidenceLedger:
         for idx, obs in enumerate(observations, start=1):
             expected_id = f"EV-{idx:03d}"
             if obs.id != expected_id:
-                raise ValueError(
-                    f"Observation ID '{obs.id}' does not match expected sequential ID '{expected_id}'."
-                )
+                raise ValueError(f"Observation ID '{obs.id}' does not match expected sequential ID '{expected_id}'.")
             key: ObservationKey = (
                 obs.source_group,
                 obs.source,
@@ -334,4 +332,3 @@ class DiagnosticService:
             "records": [r.model_dump(mode="json") for r in new_records],
             "summary": f"Retrieved {len(new_records)} operational event records.",
         }
-

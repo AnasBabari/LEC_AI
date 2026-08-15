@@ -1,0 +1,74 @@
+{
+  "id": "replica_replication_lag",
+  "title": "Database Read Replica Replication Delay during Heavy Ingestion",
+  "incident_at": "2026-08-14T16:00:00Z",
+  "description": "Read replica replication lag grew to over 180 seconds during a massive data import job on the primary database, resulting in stale data reads on user profile and search endpoints while primary database write probes remain healthy.",
+  "affected_components": ["api_gateway", "database"],
+  "initial_fault_report": {
+    "source": "sentry_alert",
+    "severity": "CRITICAL",
+    "headline": "High Database Replication Lag (185s) & Stale Read Inconsistencies",
+    "reported_at": "2026-08-14T16:00:00Z",
+    "details": "User accounts service reporting stale query reads from read replica pool."
+  },
+  "diagnostics": {
+    "telemetry": [
+      {
+        "signal": "replica_lag_seconds",
+        "component": "database",
+        "dimension": "freshness",
+        "status": "degraded",
+        "value": 185.0,
+        "unit": "seconds",
+        "offset_minutes": -1,
+        "window_duration_seconds": 300,
+        "scope": "workload",
+        "reliability": "aggregated",
+        "details": "Replication stream byte lag between primary database and read replica nodes reached 185 seconds."
+      },
+      {
+        "signal": "gateway_p99_latency",
+        "component": "api_gateway",
+        "dimension": "latency",
+        "status": "degraded",
+        "value": 1650.0,
+        "unit": "ms",
+        "offset_minutes": -1,
+        "window_duration_seconds": 300,
+        "scope": "workload",
+        "reliability": "aggregated",
+        "details": "Gateway p99 latency on read endpoints elevated due to read replica query contention."
+      }
+    ],
+    "health_probe": [
+      {
+        "signal": "db_synthetic_direct_probe",
+        "component": "database",
+        "dimension": "latency",
+        "status": "healthy",
+        "value": 1.6,
+        "unit": "ms",
+        "offset_minutes": -1,
+        "window_duration_seconds": 60,
+        "scope": "synthetic_probe",
+        "reliability": "verified",
+        "details": "Direct synthetic write and primary read probe execute in 1.6ms on database primary."
+      }
+    ],
+    "operational_events": [
+      {
+        "signal": "bulk_ingestion_lock_event",
+        "component": "database",
+        "dimension": "freshness",
+        "status": "degraded",
+        "value": 1.0,
+        "unit": "batch_job",
+        "offset_minutes": -15,
+        "window_duration_seconds": 900,
+        "scope": "batch_schedule",
+        "reliability": "verified",
+        "details": "Nightly customer data ingestion batch job initiated, saturating replica WAL streaming buffer."
+      }
+    ]
+  }
+}
