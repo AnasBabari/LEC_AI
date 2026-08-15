@@ -36,13 +36,14 @@ class PolicyEngine:
         # Validate policy schema at startup
         self.validated_config = PolicyConfig.model_validate(self.policy_data)
 
-        self.scoring_weights = self.policy_data["scoring_weights"]
-        self.reliability_weights = self.policy_data["reliability_weights"]
-        self.freshness_thresholds = self.policy_data["freshness_thresholds_seconds"]
-        self.freshness_weights = self.policy_data["freshness_weights"]
-        self.directness_weights = self.policy_data["directness_weights"]
-        self.cause_catalogue = self.policy_data["cause_catalogue"]
-        self.strategies = self.policy_data["strategies"]
+        import copy
+        self.scoring_weights = copy.deepcopy(self.policy_data["scoring_weights"])
+        self.reliability_weights = copy.deepcopy(self.policy_data["reliability_weights"])
+        self.freshness_thresholds = copy.deepcopy(self.policy_data["freshness_thresholds_seconds"])
+        self.freshness_weights = copy.deepcopy(self.policy_data["freshness_weights"])
+        self.directness_weights = copy.deepcopy(self.policy_data["directness_weights"])
+        self.cause_catalogue = copy.deepcopy(self.policy_data["cause_catalogue"])
+        self.strategies = copy.deepcopy(self.policy_data["strategies"])
 
     @property
     def cause_rules(self) -> dict[RootCauseCode, list[dict[str, Any]]]:
@@ -340,6 +341,12 @@ class EvidenceEvaluator:
 
     def _compute_freshness_score(self, observed_at: datetime, incident_at: datetime) -> int:
         """Compute freshness score anchored to incident timestamp with clock skew protection."""
+        from datetime import timezone
+        if observed_at.tzinfo is None and incident_at.tzinfo is not None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        elif observed_at.tzinfo is not None and incident_at.tzinfo is None:
+            incident_at = incident_at.replace(tzinfo=timezone.utc)
+
         if observed_at > incident_at:
             forward_skew = (observed_at - incident_at).total_seconds()
             if forward_skew > 60:

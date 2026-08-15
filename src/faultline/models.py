@@ -680,4 +680,10 @@ class ScenarioMetadata(BaseModel):
 class AnalyzeRequest(BaseModel):
     """Request payload for /api/analyze."""
 
-    scenario_id: str = "cache_invalidation_lag"
+    scenario_id: str = Field(
+        default="cache_invalidation_lag",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[a-zA-Z0-9_-]+$",
+        description="Identifier of the scenario fixture to diagnose.",
+    )

@@ -90,12 +90,17 @@ def test_unknown_api_route_returns_404_json() -> None:
         assert response.headers["content-type"].startswith("application/json")
 
 
-def test_path_traversal_scenario_returns_404() -> None:
-    """Test path traversal scenario payload returns 404 error."""
+def test_path_traversal_scenario_returns_error() -> None:
+    """Test path traversal scenario payload is rejected with 422 validation error or 404."""
     with TestClient(app) as client:
         payload = {"scenario_id": "../policy"}
         response = client.post("/api/analyze", json=payload)
-        assert response.status_code == 404
+        assert response.status_code in (404, 422)
+
+        # Valid formatted ID that doesn't exist returns 404
+        payload_missing = {"scenario_id": "nonexistent_scenario_fixture"}
+        response_missing = client.post("/api/analyze", json=payload_missing)
+        assert response_missing.status_code == 404
 
 
 def test_frontend_path_traversal_is_blocked() -> None:
