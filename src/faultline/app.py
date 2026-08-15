@@ -36,6 +36,16 @@ logger = logging.getLogger("faultline.app")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 
+def sanitize_error_message(msg: Any) -> str:
+    """Strip any accidental authorization tokens, api keys, or sensitive text from error details."""
+    import re
+
+    cleaned = re.sub(r"(?:Bearer\s+|key=)[A-Za-z0-9_\-\.]{10,}", "[REDACTED_SECRET]", str(msg))
+    cleaned = re.sub(r"sk-[A-Za-z0-9_\-]{10,}", "[REDACTED_SECRET]", cleaned)
+    cleaned = re.sub(r"AIza[A-Za-z0-9_\-]{10,}", "[REDACTED_SECRET]", cleaned)
+    return cleaned
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context resolving model availability and policy engine at startup."""
@@ -46,10 +56,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     existing_provider = getattr(app.state, "provider", None)
     if existing_provider is None:
-        api_key = os.getenv("GEMINI_API_KEY")
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        is_offline = os.getenv("FAULTLINE_OFFLINE", "").lower() in ("1", "true", "yes")
         provider: LLMProviderProtocol
-        if api_key and os.getenv("FAULTLINE_ENV") != "test":
-            provider = GeminiProvider(api_key=api_key)
+        if (gemini_key or openrouter_key) and os.getenv("FAULTLINE_ENV") != "test" and not is_offline:
+            provider = GeminiProvider(api_key=gemini_key, openrouter_api_key=openrouter_key)
         else:
             logger.info("Starting in deterministic offline mode with FakeGeminiProvider.")
             provider = FakeGeminiProvider()
@@ -73,7 +85,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:8000", "http://127.0.0.1:5173", "http://127.0.0.1:8000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -84,16 +96,28 @@ app.add_middleware(
 def health_check() -> dict[str, Any]:
     """Health check endpoint indicating server readiness and provider configuration."""
     api_key_configured = bool(os.getenv("GEMINI_API_KEY"))
+    openrouter_key_configured = bool(os.getenv("OPENROUTER_API_KEY"))
     provider = getattr(app.state, "provider", None)
     model_name = provider.primary_model if provider else "unknown"
     fallback_name = getattr(provider, "fallback_model", None) if provider else None
+    openrouter_model = getattr(provider, "openrouter_model", None) if provider else None
     discovered = getattr(provider, "discovered_accessible", True) if provider else True
-    model_resolution_status = getattr(
-        provider, "model_resolution_status", "verified" if discovered else "unavailable"
-    ) if provider else "offline"
-    mode = "live_gemini" if (api_key_configured and isinstance(provider, GeminiProvider)) else "deterministic_fake"
+    model_resolution_status = (
+        getattr(provider, "model_resolution_status", "verified" if discovered else "unavailable")
+        if provider
+        else "offline"
+    )
 
-    analysis_ready = (mode == "deterministic_fake") or (model_resolution_status in ("verified", "fallback_active"))
+    if api_key_configured and isinstance(provider, GeminiProvider):
+        mode = "live_gemini"
+    elif openrouter_key_configured and isinstance(provider, GeminiProvider):
+        mode = "live_openrouter"
+    else:
+        mode = "deterministic_fake"
+
+    analysis_ready = (mode == "deterministic_fake") or (
+        model_resolution_status in ("verified", "fallback_active", "openrouter_standby")
+    )
 
     return {
         "status": "healthy",
@@ -101,9 +125,11 @@ def health_check() -> dict[str, Any]:
         "version": "0.1.0",
         "analysis_ready": analysis_ready,
         "gemini_configured": api_key_configured,
+        "openrouter_configured": openrouter_key_configured,
         "provider_mode": mode,
         "runtime_model": model_name,
         "fallback_model": fallback_name,
+        "openrouter_model": openrouter_model if openrouter_key_configured else None,
         "discovered_accessible": discovered,
         "model_resolution_status": model_resolution_status,
     }
@@ -131,32 +157,32 @@ def analyze_incident(req: AnalyzeRequest) -> AnalysisResult:
     except ModelRequestError as mre:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Upstream model request invalid: {mre}",
+            detail=f"Upstream model request invalid: {sanitize_error_message(mre)}",
         ) from mre
     except (InsufficientEvidenceError, InvalidModelOutputError) as val_err:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Analysis validation error: {val_err}",
+            detail=f"Analysis validation error: {sanitize_error_message(val_err)}",
         ) from val_err
     except (ModelAuthenticationError, ModelUnavailableError) as mue:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Model provider is currently unavailable: {mue}",
+            detail=f"Model provider is currently unavailable: {sanitize_error_message(mue)}",
         ) from mue
     except AnalysisTimeoutError as ate:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=f"Analysis timed out: {ate}",
+            detail=f"Analysis timed out: {sanitize_error_message(ate)}",
         ) from ate
     except OrchestratorError as oe:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Orchestration engine failure: {oe}",
+            detail=f"Orchestration engine failure: {sanitize_error_message(oe)}",
         ) from oe
     except ValidationError as ve:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Final report validation failed: {ve}",
+            detail=f"Final report validation failed: {sanitize_error_message(ve)}",
         ) from ve
     except Exception as e:
         error_id = f"ERR-{uuid.uuid4().hex[:8].upper()}"

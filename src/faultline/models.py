@@ -213,15 +213,21 @@ class HypothesisDraft(BaseModel):
 
         overlap_sup_opp = sup_set & opp_set
         if overlap_sup_opp:
-            raise ValueError(f"Evidence IDs cannot be simultaneously supporting and opposing: {sorted(overlap_sup_opp)}")
+            raise ValueError(
+                f"Evidence IDs cannot be simultaneously supporting and opposing: {sorted(overlap_sup_opp)}"
+            )
 
         overlap_ctx_sup = ctx_set & sup_set
         if overlap_ctx_sup:
-            raise ValueError(f"Evidence IDs cannot be simultaneously contextual and supporting: {sorted(overlap_ctx_sup)}")
+            raise ValueError(
+                f"Evidence IDs cannot be simultaneously contextual and supporting: {sorted(overlap_ctx_sup)}"
+            )
 
         overlap_ctx_opp = ctx_set & opp_set
         if overlap_ctx_opp:
-            raise ValueError(f"Evidence IDs cannot be simultaneously contextual and opposing: {sorted(overlap_ctx_opp)}")
+            raise ValueError(
+                f"Evidence IDs cannot be simultaneously contextual and opposing: {sorted(overlap_ctx_opp)}"
+            )
 
         return self
 
@@ -294,7 +300,8 @@ class DecisionNarrativeDraft(BaseModel):
         default_factory=list, description="List of conflict IDs explicitly discussed in narrative (e.g. ['CONF-001'])"
     )
     referenced_evidence_ids: list[str] = Field(
-        default_factory=list, description="List of evidence IDs explicitly discussed in narrative (e.g. ['EV-002', 'EV-003'])"
+        default_factory=list,
+        description="List of evidence IDs explicitly discussed in narrative (e.g. ['EV-002', 'EV-003'])",
     )
 
 
@@ -489,9 +496,13 @@ class StrategyConfig(BaseModel):
     @classmethod
     def validate_effectiveness(cls, v: dict[str, float]) -> dict[str, float]:
         allowed = {c.value for c in RootCauseCode}
+        if set(v.keys()) != allowed:
+            missing = allowed - set(v.keys())
+            extra = set(v.keys()) - allowed
+            raise ValueError(
+                f"effectiveness_by_cause must define values for all root causes. Missing: {missing}, Extra: {extra}"
+            )
         for cause, eff in v.items():
-            if cause not in allowed:
-                raise ValueError(f"Unknown root cause '{cause}' in effectiveness_by_cause")
             if not (0.0 <= eff <= 100.0):
                 raise ValueError(f"Effectiveness for '{cause}' must be in [0, 100], got {eff}")
         return v
@@ -560,9 +571,7 @@ class PolicyConfig(BaseModel):
         if not required_keys.issubset(set(v.keys())):
             raise ValueError(f"freshness_thresholds_seconds must contain {required_keys}, got {set(v.keys())}")
         if v["current_max"] > v["recent_max"]:
-            raise ValueError(
-                f"current_max ({v['current_max']}) must be <= recent_max ({v['recent_max']})"
-            )
+            raise ValueError(f"current_max ({v['current_max']}) must be <= recent_max ({v['recent_max']})")
         return v
 
     @field_validator("cause_catalogue")
@@ -605,6 +614,7 @@ class ModelCallTrace(BaseModel):
 
     task: str
     model: str
+    provider: Optional[str] = "google-gemini"
     fallback_used: bool = False
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
@@ -615,9 +625,11 @@ class ModelExecutionMetadata(BaseModel):
 
     configured_primary_model: str
     configured_fallback_model: Optional[str] = None
+    configured_openrouter_model: Optional[str] = None
     startup_resolved_model: Optional[str] = None
     startup_resolution_status: Optional[str] = None
     model_used: str
+    provider_used: Optional[str] = None
     models_used: list[str] = Field(default_factory=list)
     thinking_level: str
     fallback_occurred: bool = False
@@ -669,4 +681,3 @@ class AnalyzeRequest(BaseModel):
     """Request payload for /api/analyze."""
 
     scenario_id: str = "cache_invalidation_lag"
-

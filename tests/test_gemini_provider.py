@@ -1,5 +1,6 @@
 """Tests for GeminiProvider, FakeGeminiProvider, error classification, and InvestigationSession isolation."""
 
+import json
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -134,6 +135,7 @@ def test_fake_gemini_provider_offline_metadata() -> None:
 def test_gemini_provider_offline_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify GeminiProvider gracefully operates in stub mode when no API key is available."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
     provider = GeminiProvider(api_key="")
     meta = provider.get_execution_metadata()
     assert meta.configured_primary_model == "gemini-3.7-flash"
@@ -215,7 +217,9 @@ def test_mock_gemini_primary_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_mock_gemini_400_no_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify 400 Bad Request raises ModelRequestError without triggering fallback."""
-    provider = GeminiProvider(api_key="dummy-key", preferred_model="gemini-3.7-flash", fallback_model="gemini-3.6-flash")
+    provider = GeminiProvider(
+        api_key="dummy-key", preferred_model="gemini-3.7-flash", fallback_model="gemini-3.6-flash"
+    )
     mock_client = MagicMock()
     provider._client = mock_client
 
@@ -237,7 +241,9 @@ def test_mock_gemini_400_no_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_mock_gemini_401_no_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify 401 Unauthorized raises ModelAuthenticationError without fallback."""
-    provider = GeminiProvider(api_key="dummy-key", preferred_model="gemini-3.7-flash", fallback_model="gemini-3.6-flash")
+    provider = GeminiProvider(
+        api_key="dummy-key", preferred_model="gemini-3.7-flash", fallback_model="gemini-3.6-flash"
+    )
     mock_client = MagicMock()
     provider._client = mock_client
 
@@ -258,7 +264,9 @@ def test_mock_gemini_401_no_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_mock_gemini_429_triggers_sticky_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify 429 triggers fallback to 3.6, and subsequent calls stay on 3.6 (sticky)."""
-    provider = GeminiProvider(api_key="dummy-key", preferred_model="gemini-3.7-flash", fallback_model="gemini-3.6-flash")
+    provider = GeminiProvider(
+        api_key="dummy-key", preferred_model="gemini-3.7-flash", fallback_model="gemini-3.6-flash"
+    )
     mock_client = MagicMock()
     provider._client = mock_client
 
@@ -311,7 +319,9 @@ def test_mock_gemini_429_triggers_sticky_fallback(monkeypatch: pytest.MonkeyPatc
 
 def test_mock_gemini_schema_repair_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify 1 same-model schema repair occurs when initial JSON fails schema validation."""
-    provider = GeminiProvider(api_key="dummy-key", preferred_model="gemini-3.7-flash", fallback_model="gemini-3.6-flash")
+    provider = GeminiProvider(
+        api_key="dummy-key", preferred_model="gemini-3.7-flash", fallback_model="gemini-3.6-flash"
+    )
     mock_client = MagicMock()
     provider._client = mock_client
 
@@ -344,7 +354,9 @@ def test_mock_gemini_schema_repair_success(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_mock_gemini_schema_repair_failure_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify that when schema repair also produces invalid JSON, InvalidModelOutputError is raised."""
-    provider = GeminiProvider(api_key="dummy-key", preferred_model="gemini-3.7-flash", fallback_model="gemini-3.6-flash")
+    provider = GeminiProvider(
+        api_key="dummy-key", preferred_model="gemini-3.7-flash", fallback_model="gemini-3.6-flash"
+    )
     mock_client = MagicMock()
     provider._client = mock_client
 
@@ -367,7 +379,9 @@ def test_mock_gemini_schema_repair_failure_raises(monkeypatch: pytest.MonkeyPatc
 
 def test_mock_gemini_both_models_fail_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify that if both primary and fallback fail with 503, ModelUnavailableError is raised."""
-    provider = GeminiProvider(api_key="dummy-key", preferred_model="gemini-3.7-flash", fallback_model="gemini-3.6-flash")
+    provider = GeminiProvider(
+        api_key="dummy-key", preferred_model="gemini-3.7-flash", fallback_model="gemini-3.6-flash"
+    )
     mock_client = MagicMock()
     provider._client = mock_client
 
@@ -409,3 +423,123 @@ def test_investigation_session_preserves_model_provenance() -> None:
     assert meta.configured_primary_model == "gemini-3.7-flash"
     assert meta.configured_fallback_model == "gemini-3.6-flash"
     assert meta.startup_resolved_model is not None
+
+
+def test_cascade_gemini_fail_falls_back_to_openrouter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that when both Gemini models fail with transient errors, the cascade falls back to OpenRouter."""
+    provider = GeminiProvider(
+        api_key="dummy-gemini-key",
+        preferred_model="gemini-3.7-flash",
+        fallback_model="gemini-3.6-flash",
+        openrouter_api_key="sk-or-v1-dummy-openrouter-key",
+        openrouter_model="google/gemini-2.0-flash-001",
+    )
+    mock_client = MagicMock()
+    provider._client = mock_client
+    # Both Gemini models raise 503
+    mock_client.models.generate_content.side_effect = errors.APIError(503, {"message": "Gemini outage"})
+
+    # Mock urllib.request for OpenRouter returning valid DiagnosticActionBatch JSON
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = json.dumps(
+        {
+            "id": "gen-123",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(
+                            {"tool_calls": [], "investigation_complete": True, "summary": "OpenRouter diagnostic batch"}
+                        ),
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 120, "completion_tokens": 45},
+        }
+    ).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+    mock_resp.__exit__.return_value = None
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: mock_resp)
+
+    session = provider.create_session()
+    batch = provider.choose_diagnostics(
+        incident=MagicMock(headline="Test", severity="high", details="Details"),
+        evidence_ledger=[],
+        round_index=1,
+        available_tools=["query_telemetry"],
+        remaining_attempts=3,
+        session=session,
+    )
+    assert batch.investigation_complete is True
+    assert session.active_provider == "openrouter"
+    assert session.active_model == "google/gemini-2.0-flash-001"
+    assert session.fallback_occurred is True
+
+
+def test_openrouter_schema_repair_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that OpenRouter output failing schema validation undergoes 1 same-model repair."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    provider = GeminiProvider(
+        api_key=None,
+        openrouter_api_key="sk-or-v1-dummy-key",
+        openrouter_model="google/gemini-2.0-flash-001",
+    )
+
+    bad_resp = MagicMock()
+    bad_resp.read.return_value = json.dumps(
+        {
+            "choices": [{"message": {"role": "assistant", "content": '{"tool_calls": "invalid_not_a_list"}'}}],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 10},
+        }
+    ).encode("utf-8")
+    bad_resp.__enter__.return_value = bad_resp
+    bad_resp.__exit__.return_value = None
+
+    good_resp = MagicMock()
+    good_resp.read.return_value = json.dumps(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(
+                            {
+                                "tool_calls": [],
+                                "investigation_complete": True,
+                                "summary": "Repaired and complete diagnostic batch",
+                            }
+                        ),
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 70, "completion_tokens": 15},
+        }
+    ).encode("utf-8")
+    good_resp.__enter__.return_value = good_resp
+    good_resp.__exit__.return_value = None
+
+    responses = [bad_resp, good_resp]
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: responses.pop(0))
+
+    session = provider.create_session()
+    batch = provider.choose_diagnostics(
+        incident=MagicMock(headline="Test", severity="high", details="Details"),
+        evidence_ledger=[],
+        round_index=1,
+        available_tools=["query_telemetry"],
+        remaining_attempts=3,
+        session=session,
+    )
+    assert batch.investigation_complete is True
+    assert len(session.call_trace) == 2
+    assert session.call_trace[1].task == "choose_diagnostics_repair"
+
+
+def test_openrouter_error_sanitization_never_leaks_keys() -> None:
+    """Verify that OpenRouter errors redact keys and tokens completely."""
+    secret_key = "sk-or-v1-super-secret-production-token-12345"
+    err = Exception(f"HTTP 401 Unauthorized with token {secret_key} at path /var/secrets/key.json")
+    is_eligible, cat = classify_model_error(err)
+    assert secret_key not in cat
+    assert "authentication_failed" in cat

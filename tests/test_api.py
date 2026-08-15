@@ -149,4 +149,3 @@ def test_domain_error_http_mappings() -> None:
         resp504 = client.post("/api/analyze", json={"scenario_id": "cache_invalidation_lag"})
         assert resp504.status_code == 504
         assert "Analysis timed out" in resp504.json()["detail"]
-
