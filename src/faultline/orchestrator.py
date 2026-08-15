@@ -172,6 +172,8 @@ class IncidentOrchestrator:
 
             def execute_tool(t_name: str, args: dict[str, Any], round_num: int) -> dict[str, Any]:
                 nonlocal total_tool_attempts
+                if total_tool_attempts >= self.max_tool_attempts:
+                    return {"error": "Maximum tool attempt budget reached", "skipped": True}
                 total_tool_attempts += 1
                 before_count = len(ledger.get_observations())
                 if t_name == DiagnosticToolName.QUERY_TELEMETRY.value:
@@ -266,14 +268,16 @@ class IncidentOrchestrator:
                     SourceGroup.OPERATIONAL_EVENTS,
                 } - ledger.successful_source_groups
                 for missing_group in missing_groups:
+                    if total_tool_attempts >= self.max_tool_attempts:
+                        break
                     check_deadline()
                     broad_tool = SOURCE_GROUP_TO_TOOL[missing_group]
                     execute_tool(broad_tool.value, {}, self.max_rounds)
 
             # If no conflicts detected yet, execute broad health probes and telemetry to surface scope tensions
-            if not ConflictDetector.detect_conflicts(ledger):
+            if not ConflictDetector.detect_conflicts(ledger) and total_tool_attempts < self.max_tool_attempts:
                 execute_tool(DiagnosticToolName.RUN_HEALTH_PROBES.value, {}, self.max_rounds)
-                if not ConflictDetector.detect_conflicts(ledger):
+                if not ConflictDetector.detect_conflicts(ledger) and total_tool_attempts < self.max_tool_attempts:
                     execute_tool(DiagnosticToolName.QUERY_TELEMETRY.value, {}, self.max_rounds)
 
             if len(ledger.successful_source_groups) < 2:

@@ -916,9 +916,11 @@ class GeminiProvider:
                         raise ModelAuthenticationError(
                             f"Authentication failed during model '{target_model}' repair: {sanitized_reason}"
                         ) from repair_call_err
-                raise InvalidModelOutputError(
-                    f"Model '{target_model}' repair call failed: {sanitized_reason}"
-                ) from repair_call_err
+                    raise InvalidModelOutputError(
+                        f"Model '{target_model}' repair call failed: {sanitized_reason}"
+                    ) from repair_call_err
+                # Transient error during repair (e.g. 429/503/timeout) -> propagate to outer cascade for retry/fallback
+                raise repair_call_err
 
             if session and hasattr(repaired_response, "usage_metadata") and repaired_response.usage_metadata:
                 rp_toks = getattr(repaired_response.usage_metadata, "prompt_token_count", None)
@@ -1061,7 +1063,18 @@ class GeminiProvider:
                     r_data = json.loads(r_bytes.decode("utf-8"))
             except Exception as r_err:
                 is_eligible, sanitized_reason = classify_model_error(r_err)
-                raise InvalidModelOutputError(f"OpenRouter repair request failed: {sanitized_reason}") from r_err
+                if not is_eligible:
+                    if "bad_request" in sanitized_reason:
+                        raise ModelRequestError(
+                            f"Bad request during OpenRouter model '{target_model}' repair: {sanitized_reason}"
+                        ) from r_err
+                    if "authentication_failed" in sanitized_reason or "permission_denied" in sanitized_reason:
+                        raise ModelAuthenticationError(
+                            f"Authentication failed during OpenRouter model '{target_model}' repair: {sanitized_reason}"
+                        ) from r_err
+                    raise InvalidModelOutputError(f"OpenRouter repair request failed: {sanitized_reason}") from r_err
+                # Transient error during repair -> propagate to outer cascade for retry/fallback
+                raise r_err
 
             r_choices = r_data.get("choices", [])
             r_text = r_choices[0].get("message", {}).get("content", "") if r_choices else "{}"
