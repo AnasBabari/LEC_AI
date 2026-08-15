@@ -175,6 +175,96 @@ The solid arrows show the trusted decision path: investigate, record evidence, c
 
 ---
 
+### 3. End-to-End Architecture & Monitored Infrastructure Interactions
+
+The diagram below illustrates how the **Frontend**, **Backend Kernel**, **Multi-Tier AI Cascade**, and **Monitored Production Target** interact during a live investigation, showing real metrics, KPIs, and diagnostic queries exchanged across layers:
+
+```mermaid
+flowchart TB
+    subgraph UI["🖥️ Frontend Layer (React 19 + TypeScript)"]
+        direction TB
+        Dash["📊 Incident Observability Dashboard"]
+        Replay["⏱️ Investigation Replay Scrubber"]
+        TensionView["⚡ Scope Tensions & Contradiction Cards"]
+        StratMatrix["🎯 4D Repair Strategy Comparison Table"]
+        SafetyBox["🛡️ Safety Console & Approval Gate"]
+        Dash --- Replay & TensionView & StratMatrix & SafetyBox
+    end
+
+    subgraph API["⚙️ Backend Engine & Kernel (FastAPI / Python)"]
+        direction TB
+        AppRouter["🔌 FastAPI Routes & CORS / Health Checks"]
+        Orchestrator["🔄 IncidentOrchestrator (State Machine & Tool Budget)"]
+        Ledger["📜 Append-Only Evidence Ledger (Immutable Snapshots)"]
+        PolicyEngine["⚖️ PolicyEngine & ConflictDetector (Scope Tensions)"]
+        Scorer["🧮 EvidenceEvaluator & StrategyRanker (Unrounded 4D Math)"]
+        Validator["🛡️ ReportValidator (Authoritative Grounding Gate)"]
+
+        AppRouter --> Orchestrator
+        Orchestrator --> Ledger
+        Orchestrator --> PolicyEngine
+        Orchestrator --> Scorer
+        Orchestrator --> Validator
+    end
+
+    subgraph AI["🧠 AI / ML Reasoning Layer (Multi-Tier Cascade)"]
+        direction TB
+        Provider["🤖 LLM Provider Interface (Session-Sticky)"]
+        Tier1["🥇 Primary: Gemini 3.7 Flash"]
+        Tier2["🥈 Secondary: Gemini 3.6 Flash (429/503 Fallback)"]
+        Tier3["🥉 Tertiary: OpenRouter Gemini 2.0 Flash"]
+        Tier4["🔒 Deterministic Offline Engine (Zero-Key Mode)"]
+
+        Provider --> Tier1
+        Tier1 -. Fallback .-> Tier2
+        Tier2 -. Fallback .-> Tier3
+        Tier3 -. Fallback .-> Tier4
+    end
+
+    subgraph MonitoredSystem["🏢 Monitored Target (Example: E-Commerce Platform)"]
+        direction TB
+        
+        subgraph S_Gateway["🌐 Ingress API Gateway"]
+            GW_Node["Kong / Envoy / Nginx"]
+            GW_KPIs["<b>Live Metrics & KPIs:</b><br/>• p99 Latency: 2,400 ms (Degraded)<br/>• Error Rate: 12.4% HTTP 504<br/>• Throughput: 14,200 req/s"]
+            GW_Node --- GW_KPIs
+        end
+
+        subgraph S_Cache["⚡ Cache Cluster"]
+            Cache_Node["Redis Distributed Cache"]
+            Cache_KPIs["<b>Live Metrics & KPIs:</b><br/>• Cache Hit Ratio: 34% (Stale Drop)<br/>• Memory Used: 1.8 GB / 8 GB<br/>• Eviction Rate: 0 keys/sec"]
+            Cache_Node --- Cache_KPIs
+        end
+
+        subgraph S_Database["🗄️ Primary Relational Database"]
+            DB_Node["PostgreSQL Primary Instance"]
+            DB_KPIs["<b>Live Metrics & KPIs:</b><br/>• Pool Saturation: 92% (Degraded)<br/>• Direct Ping: 1.8 ms (Healthy!)<br/>• Storage IOPS: 420 / 10,000"]
+            DB_Node --- DB_KPIs
+        end
+
+        subgraph S_Queue["📬 Message Broker & Workers"]
+            Queue_Node["RabbitMQ & Async Workers"]
+            Queue_KPIs["<b>Live Metrics & KPIs:</b><br/>• Queue Backlog: 42,000 msgs (Stalled)<br/>• Worker Status: Dead (Crash 18m ago)<br/>• Consumer Lag: 1,080 seconds"]
+            Queue_Node --- Queue_KPIs
+        end
+    end
+
+    %% User Interaction
+    User["👤 Human SRE / Incident Commander"] <-->|Interacts via Browser / Evaluates Evidence| UI
+    UI <-->|HTTP REST / JSON API (Port 8000)| AppRouter
+
+    %% Backend <-> AI
+    Orchestrator <-->|Structured Tool Calls & Hypotheses| Provider
+
+    %% Backend <-> Monitored Infrastructure
+    Orchestrator -->|1. query_telemetry| GW_Node
+    Orchestrator -->|2. run_health_probes| DB_Node
+    Orchestrator -->|3. fetch_operational_events| Queue_Node
+    Orchestrator -->|4. query_telemetry| Cache_Node
+```
+
+---
+
 ## Inside Faultline
 
 ### AI investigates, Python decides
