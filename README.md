@@ -101,8 +101,8 @@ flowchart LR
     Explain["Faultline explains<br/>the recommendation"]
     Human["Human reviews<br/>& decides"]
 
-    GeminiInv["Gemini AI<br/>helps investigate"]
-    GeminiExp["Gemini AI<br/>helps explain"]
+    AIInv["AI Model<br/>(Gemini / OpenRouter)"]
+    AIExp["AI Model<br/>(Gemini / OpenRouter)"]
     Rules["Fixed scoring<br/>& safety rules"]
 
     Incident --> Investigate --> Evidence --> Cause --> Compare
@@ -117,15 +117,15 @@ flowchart LR
 
     Rank --> Validate --> Explain --> Human
 
-    GeminiInv -.-> Investigate
-    GeminiExp -.-> Explain
+    AIInv -.-> Investigate
+    AIExp -.-> Explain
 
     Rules --> Cause
     Rules --> Rank
     Rules --> Validate
 ```
 
-The solid arrows show the trusted decision path: investigate, record evidence, compare possible causes, **compare several competing repairs**, rank them by their trade-offs, validate the result, and explain it to a human — who makes the final decision. Gemini assists with investigation and explanation (dotted arrows), while deterministic Python owns evidence recording, conflict detection, scoring, ranking, and validation, guided by fixed scoring and safety rules. The process stops at a human operator — Faultline never executes a repair automatically.
+The solid arrows show the trusted decision path: investigate, record evidence, compare possible causes, **compare several competing repairs**, rank them by their trade-offs, validate the result, and explain it to a human — who makes the final decision. AI models (Google Gemini with secondary Gemini and tertiary OpenRouter fallback) assist with investigation and explanation (dotted arrows), while deterministic Python owns evidence recording, conflict detection, scoring, ranking, and validation, guided by fixed scoring and safety rules. The process stops at a human operator — Faultline never executes a repair automatically.
 
 > The diagram highlights three representative choices from the canonical incident. Faultline evaluates the full repair catalogue before producing its ranking.
 
@@ -135,9 +135,9 @@ The solid arrows show the trusted decision path: investigate, record evidence, c
 
 ### AI investigates, Python decides
 
-Faultline pairs Gemini AI with deterministic Python code, with clearly separated jobs.
+Faultline pairs AI reasoning models (Google Gemini with multi-tier OpenRouter fallback) with deterministic Python code, with clearly separated jobs.
 
-Gemini helps decide:
+The AI model helps decide:
 
 - which diagnostics to inspect;
 - which allowed root causes are worth investigating;
@@ -154,7 +154,7 @@ Python owns:
 - safety checks;
 - final validation.
 
-> Gemini assists with reasoning, but deterministic Python owns decision authority.
+> The AI model assists with reasoning, but deterministic Python owns decision authority.
 
 Here, *deterministic* simply means that the same evidence and the same fixed rules produce the same numerical result. Every run over the same data produces identical scores and rankings.
 
@@ -234,13 +234,18 @@ Faultline does not trust its own generated report simply because the pipeline pr
 
 If the structured result disagrees with the fixed rules, the report is rejected. This gate lives in `ReportValidator` (`src/faultline/validation.py`).
 
-### Model setup
+### Model setup & multi-tier fallback cascade
 
-Primary: `gemini-3.7-flash` · Fallback: `gemini-3.6-flash`.
+Faultline uses a resilient, multi-tier provider cascade with bounded retries and exponential backoff to handle rate limits, service degradations, and regional quotas:
 
-If the preferred Gemini model becomes unavailable, Faultline can use the fallback for that investigation without changing the model state of other investigations.
+1. **Tier 1 (Primary)**: `gemini-3.7-flash` (or `GEMINI_MODEL`) via Google GenAI SDK.
+2. **Tier 2 (Gemini Fallback)**: `gemini-3.6-flash` (or `GEMINI_FALLBACK_MODEL`) if the primary model encounters rate limits (429), capacity issues (503), or transient network timeouts.
+3. **Tier 3 (OpenRouter Fallback)**: `google/gemini-2.0-flash-001` (or `OPENROUTER_FALLBACK_MODEL`) via OpenRouter's OpenAI-compatible API (`OPENROUTER_API_KEY`) if Google Gemini endpoints are unreachable or quota-exhausted.
+4. **Tier 4 (Deterministic Offline Mode)**: Built-in deterministic reasoning provider for hermetic CI builds, local development, and zero-credential assessment.
 
-Offline mode replaces Gemini with deterministic test behaviour, so the full pipeline can run in CI without credentials.
+**Session stickiness:** When a fallback tier succeeds, subsequent diagnostic and narrative calls in that investigation session stay on the working provider to eliminate retry latency.
+
+**Strict error sanitization:** Secrets, API keys, and authorization headers are never logged or returned in error payloads. Non-transient client errors (such as 400 Bad Request or 401 Unauthorized) fail fast without triggering invalid fallbacks.
 
 ### Testing
 
@@ -289,7 +294,7 @@ Faultline includes a React web dashboard that shows:
 
 - Python 3.11+ (with [`uv`](https://docs.astral.sh/uv/) package manager)
 - Node.js 20+ (for the frontend dashboard)
-- *(Optional)* `GEMINI_API_KEY` for live AI reasoning — runs fully deterministic in offline mode without a key
+- *(Optional)* API key for live AI reasoning (`GEMINI_API_KEY` for Google Gemini or `OPENROUTER_API_KEY` for OpenRouter) — runs fully deterministic in offline mode without any keys
 
 ### Local setup
 
@@ -300,6 +305,10 @@ cd LEC_AI
 
 # Install locked Python dependencies
 uv sync --frozen --all-extras
+
+# (Optional) Export live API keys
+export GEMINI_API_KEY="your-gemini-key"          # Primary (3.7) & Secondary (3.6)
+export OPENROUTER_API_KEY="your-openrouter-key"  # Tertiary fallback
 
 # Run an offline analysis from the command line
 uv run faultline analyze --offline --scenario cache_invalidation_lag
@@ -316,7 +325,10 @@ cd frontend && npm ci && npm run dev
 
 ```bash
 docker build -t faultline .
-docker run -p 8000:8000 -e GEMINI_API_KEY="your-key-optional" faultline
+docker run -p 8000:8000 \
+  -e GEMINI_API_KEY="your-gemini-key-optional" \
+  -e OPENROUTER_API_KEY="your-openrouter-key-optional" \
+  faultline
 # Open http://localhost:8000
 ```
 
@@ -329,7 +341,7 @@ Faultline is a working decision-support prototype, not a production control plan
 - Diagnostic sources are deterministic scenario simulators, not live Prometheus, database, cache, or queue integrations.
 - Repair commands are illustrative strings. They are never executed.
 - Evidence and strategy weights are explicit policy choices, not learned probabilities or guarantees of recovery.
-- Gemini is optional. Offline mode makes the full workflow reproducible for assessment and CI.
+- AI models are optional. A multi-tier fallback cascade (Gemini Primary -> Gemini Secondary -> OpenRouter Tertiary) handles transient live issues, while offline mode makes the full workflow reproducible for assessment and CI without credentials.
 - Structured claims are checked, but a human operator must still review the written explanation and approve any real-world action.
 
 These boundaries are deliberate: the assessment focuses on reasoning through conflicting diagnostics and defending a repair ranking.
