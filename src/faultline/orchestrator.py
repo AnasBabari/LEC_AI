@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from faultline.diagnostics import DiagnosticService, EvidenceLedger, ScenarioRepository
-from faultline.gemini import FakeGeminiProvider, GeminiProvider, LLMProviderProtocol
+from faultline.gemini import GeminiProvider, LLMProviderProtocol
 from faultline.models import (
     AdvantageDimension,
     AnalysisResult,

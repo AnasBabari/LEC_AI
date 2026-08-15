@@ -991,7 +991,7 @@ class GeminiProvider:
             err_msg = err_obj.get("message", "Unknown OpenRouter error")
             status_code = err_code if isinstance(err_code, int) else 500
             synthesized_err = urllib.error.HTTPError(
-                req_url, status_code, str(err_msg), hdrs=None, fp=None
+                req_url, status_code, str(err_msg), hdrs=cast(Any, None), fp=None
             )
             is_eligible, sanitized_reason = classify_model_error(synthesized_err)
             if not is_eligible:

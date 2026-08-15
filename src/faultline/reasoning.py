@@ -13,7 +13,6 @@ from faultline.models import (
     EvaluatedHypothesis,
     EvidenceObservation,
     EvidenceStrengthBand,
-    HealthDimension,
     HealthStatus,
     HypothesisDraft,
     ObservationEvidenceScore,
