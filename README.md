@@ -90,37 +90,44 @@ The diagram below outlines the 6 core functional requirements of an investigatio
 ```mermaid
 flowchart TD
     subgraph Step1["1. Incident Ingestion"]
-        Alert["🚨 Production Alert<br/><i>'Website is slow or failing'</i>"]
+        Alert["Production Alert<br/>'Website is slow or failing'"]
     end
 
     subgraph Step2["2. Multi-Angle Clue Gathering"]
-        T["📊 User Workload Telemetry<br/><i>(Response times & traffic)</i>"]
-        P["🩺 Synthetic Health Checks<br/><i>(Direct component pings)</i>"]
-        E["📜 Operational Logs<br/><i>(Worker heartbeats & queues)</i>"]
+        T["User Workload Telemetry<br/>(Response times & traffic)"]
+        P["Synthetic Health Checks<br/>(Direct component pings)"]
+        E["Operational Logs<br/>(Worker heartbeats & queues)"]
     end
 
     subgraph Step3["3. Conflict Reconciliation"]
-        Reconcile["⚖️ Reconcile Disagreements<br/><i>'Why does a direct health test pass while users see errors?'</i>"]
+        Reconcile["Reconcile Disagreements<br/>'Why does direct probe pass while users see errors?'"]
     end
 
     subgraph Step4["4. Root-Cause Scoring"]
-        Score["🔍 Mathematical Cause Evaluation<br/><i>Score clues by reliability, freshness, and directness</i>"]
+        Score["Mathematical Cause Evaluation<br/>Score clues by reliability, freshness, and directness"]
     end
 
     subgraph Step5["5. Competing Repair Trade-Offs"]
-        Rank["🎯 4-Dimensional Repair Ranking<br/><i>Impact (60%) · Safety (20%) · Speed (15%) · Cost (5%)</i>"]
+        Rank["4-Dimensional Repair Ranking<br/>Impact (60%) · Safety (20%) · Speed (15%) · Cost (5%)"]
     end
 
     subgraph Step6["6. Safety & Human Sign-Off"]
-        Gate["🛡️ Strict Safety Boundary<br/><i>Automated execution strictly blocked</i>"]
-        Human["👤 Human Operator Approval<br/><i>Engineer reviews evidence & executes repair safely</i>"]
+        Gate["Strict Safety Boundary<br/>Automated execution strictly blocked"]
+        Human["Human Operator Approval<br/>Engineer reviews evidence & executes repair safely"]
     end
 
-    Alert --> T & P & E
-    T & P & E --> Reconcile
+    Alert --> T
+    Alert --> P
+    Alert --> E
+
+    T --> Reconcile
+    P --> Reconcile
+    E --> Reconcile
+
     Reconcile --> Score
     Score --> Rank
-    Rank --> Gate --> Human
+    Rank --> Gate
+    Gate --> Human
 ```
 
 ---
@@ -149,7 +156,10 @@ flowchart LR
     AIExp["AI Model<br/>(Gemini / OpenRouter)"]
     Rules["Fixed scoring<br/>& safety rules"]
 
-    Incident --> Investigate --> Evidence --> Cause --> Compare
+    Incident --> Investigate
+    Investigate --> Evidence
+    Evidence --> Cause
+    Cause --> Compare
 
     Compare --> A
     Compare --> B
@@ -159,7 +169,9 @@ flowchart LR
     B --> Rank
     C --> Rank
 
-    Rank --> Validate --> Explain --> Human
+    Rank --> Validate
+    Validate --> Explain
+    Explain --> Human
 
     AIInv -.-> Investigate
     AIExp -.-> Explain
@@ -181,86 +193,57 @@ The diagram below illustrates how the **Frontend**, **Backend Kernel**, **Multi-
 
 ```mermaid
 flowchart TB
-    subgraph UI["🖥️ Frontend Layer (React 19 + TypeScript)"]
-        direction TB
-        Dash["📊 Incident Observability Dashboard"]
-        Replay["⏱️ Investigation Replay Scrubber"]
-        TensionView["⚡ Scope Tensions & Contradiction Cards"]
-        StratMatrix["🎯 4D Repair Strategy Comparison Table"]
-        SafetyBox["🛡️ Safety Console & Approval Gate"]
-        Dash --- Replay & TensionView & StratMatrix & SafetyBox
+    subgraph UI["Frontend Layer (React 19 Dashboard)"]
+        Dash["Observability Dashboard"]
+        Replay["Investigation Replay Scrubber"]
+        TensionView["Scope Tensions & Contradictions Panel"]
+        StratMatrix["4D Strategy Decision Matrix"]
+        SafetyBox["Safety Console & Approval Gate"]
     end
 
-    subgraph API["⚙️ Backend Engine & Kernel (FastAPI / Python)"]
-        direction TB
-        AppRouter["🔌 FastAPI Routes & CORS / Health Checks"]
-        Orchestrator["🔄 IncidentOrchestrator (State Machine & Tool Budget)"]
-        Ledger["📜 Append-Only Evidence Ledger (Immutable Snapshots)"]
-        PolicyEngine["⚖️ PolicyEngine & ConflictDetector (Scope Tensions)"]
-        Scorer["🧮 EvidenceEvaluator & StrategyRanker (Unrounded 4D Math)"]
-        Validator["🛡️ ReportValidator (Authoritative Grounding Gate)"]
-
-        AppRouter --> Orchestrator
-        Orchestrator --> Ledger
-        Orchestrator --> PolicyEngine
-        Orchestrator --> Scorer
-        Orchestrator --> Validator
+    subgraph Backend["Backend Engine & Authoritative Kernel (FastAPI / Python)"]
+        AppRouter["FastAPI Routes & CORS Middleware"]
+        Orchestrator["IncidentOrchestrator (State Machine & Budget)"]
+        Ledger["Append-Only Evidence Ledger (Immutable IDs)"]
+        PolicyEngine["PolicyEngine & ConflictDetector"]
+        Scorer["EvidenceEvaluator & StrategyRanker (4D Math)"]
+        Validator["ReportValidator (Authoritative Grounding Gate)"]
     end
 
-    subgraph AI["🧠 AI / ML Reasoning Layer (Multi-Tier Cascade)"]
-        direction TB
-        Provider["🤖 LLM Provider Interface (Session-Sticky)"]
-        Tier1["🥇 Primary: Gemini 3.7 Flash"]
-        Tier2["🥈 Secondary: Gemini 3.6 Flash (429/503 Fallback)"]
-        Tier3["🥉 Tertiary: OpenRouter Gemini 2.0 Flash"]
-        Tier4["🔒 Deterministic Offline Engine (Zero-Key Mode)"]
-
-        Provider --> Tier1
-        Tier1 -. Fallback .-> Tier2
-        Tier2 -. Fallback .-> Tier3
-        Tier3 -. Fallback .-> Tier4
+    subgraph AI["AI Reasoning Layer (Multi-Tier Cascade)"]
+        Provider["LLM Provider (Session-Sticky Cascade)"]
+        Tier1["Primary: Gemini 3.7 Flash"]
+        Tier2["Fallback: Gemini 3.6 Flash"]
+        Tier3["Tertiary: OpenRouter Gemini 2.0 Flash"]
+        Tier4["Offline Mode: Deterministic Engine"]
     end
 
-    subgraph MonitoredSystem["🏢 Monitored Target (Example: E-Commerce Platform)"]
-        direction TB
-        
-        subgraph S_Gateway["🌐 Ingress API Gateway"]
-            GW_Node["Kong / Envoy / Nginx"]
-            GW_KPIs["<b>Live Metrics & KPIs:</b><br/>• p99 Latency: 2,400 ms (Degraded)<br/>• Error Rate: 12.4% HTTP 504<br/>• Throughput: 14,200 req/s"]
-            GW_Node --- GW_KPIs
-        end
-
-        subgraph S_Cache["⚡ Cache Cluster"]
-            Cache_Node["Redis Distributed Cache"]
-            Cache_KPIs["<b>Live Metrics & KPIs:</b><br/>• Cache Hit Ratio: 34% (Stale Drop)<br/>• Memory Used: 1.8 GB / 8 GB<br/>• Eviction Rate: 0 keys/sec"]
-            Cache_Node --- Cache_KPIs
-        end
-
-        subgraph S_Database["🗄️ Primary Relational Database"]
-            DB_Node["PostgreSQL Primary Instance"]
-            DB_KPIs["<b>Live Metrics & KPIs:</b><br/>• Pool Saturation: 92% (Degraded)<br/>• Direct Ping: 1.8 ms (Healthy!)<br/>• Storage IOPS: 420 / 10,000"]
-            DB_Node --- DB_KPIs
-        end
-
-        subgraph S_Queue["📬 Message Broker & Workers"]
-            Queue_Node["RabbitMQ & Async Workers"]
-            Queue_KPIs["<b>Live Metrics & KPIs:</b><br/>• Queue Backlog: 42,000 msgs (Stalled)<br/>• Worker Status: Dead (Crash 18m ago)<br/>• Consumer Lag: 1,080 seconds"]
-            Queue_Node --- Queue_KPIs
-        end
+    subgraph Target["Monitored System Target (E-Commerce Infrastructure)"]
+        GW["API Gateway (p99: 2400ms, Errors: 12.4% 504)"]
+        Cache["Redis Cache (Hit Ratio: 34%, Mem: 1.8GB)"]
+        DB["PostgreSQL DB (Pool: 92%, Direct Ping: 1.8ms)"]
+        Queue["RabbitMQ (Backlog: 42k msgs, Worker: Dead)"]
     end
 
-    %% User Interaction
-    User["👤 Human SRE / Incident Commander"] <-->|Interacts via Browser / Evaluates Evidence| UI
-    UI <-->|HTTP REST / JSON API (Port 8000)| AppRouter
+    User["Human SRE / Operator"] <-->|Browser UI Interaction| Dash
+    Dash <-->|REST API JSON (Port 8000)| AppRouter
 
-    %% Backend <-> AI
+    AppRouter --> Orchestrator
+    Orchestrator --> Ledger
+    Orchestrator --> PolicyEngine
+    Orchestrator --> Scorer
+    Orchestrator --> Validator
+
     Orchestrator <-->|Structured Tool Calls & Hypotheses| Provider
+    Provider --> Tier1
+    Tier1 -.->|429/503 Fallback| Tier2
+    Tier2 -.->|Quota Fallback| Tier3
+    Tier3 -.->|Offline Fallback| Tier4
 
-    %% Backend <-> Monitored Infrastructure
-    Orchestrator -->|1. query_telemetry| GW_Node
-    Orchestrator -->|2. run_health_probes| DB_Node
-    Orchestrator -->|3. fetch_operational_events| Queue_Node
-    Orchestrator -->|4. query_telemetry| Cache_Node
+    Orchestrator -->|1. query_telemetry| GW
+    Orchestrator -->|2. run_health_probes| DB
+    Orchestrator -->|3. fetch_operational_events| Queue
+    Orchestrator -->|4. query_telemetry| Cache
 ```
 
 ---
