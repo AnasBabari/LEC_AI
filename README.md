@@ -83,130 +83,56 @@ Faultline evaluates a full repair catalogue — `RECOVER_CONSUMER_AND_DRAIN`, `T
 
 ## How Faultline works
 
-### 1. End-to-End System & Simulated Infrastructure Architecture
+When a software system breaks in production, on-call engineers face two tough problems:
+1. **Misleading clues:** Different monitoring tools often disagree. For example, a direct database test might say "Healthy", while real customer requests are timing out.
+2. **Risky shortcuts:** The fastest fix (like restarting a cache) often makes the outage worse by crashing an already overloaded database.
 
-How the **Frontend**, **Decision Core**, **AI Cascade**, and **Simulated Target System** interact:
+Faultline solves this with a clear 5-step process:
 
-```mermaid
-flowchart TB
-    subgraph UI["🖥️ Frontend Dashboard (React 19)"]
-        Dash["Observability Views · Replay Timeline · Scope Tensions · 4D Matrix · Safety Lock"]
-    end
-
-    subgraph Backend["⚙️ Faultline Decision Core (FastAPI / Python)"]
-        Orchestrator["Investigation Orchestrator & Tool Budget"]
-        Ledger["Append-Only Evidence Ledger (Immutable IDs)"]
-        Engine["Policy Engine · Conflict Detector · 4D Math Scorer"]
-        Validator["Report Validator (Deterministic Safety & Grounding Gate)"]
-        Orchestrator --> Ledger --> Engine --> Validator
-    end
-
-    subgraph AI["🧠 Multi-Tier AI Reasoning"]
-        subgraph LiveMode["Live Mode (Session-Sticky Cascade)"]
-            Tier1["Primary: Gemini 3.7 Flash"]
-            Tier2["Fallback: Gemini 3.6 Flash"]
-            Tier3["Tertiary: OpenRouter Gemini 2.0"]
-            Tier1 -. 429/503 .-> Tier2 -. Quota .-> Tier3
-        end
-        subgraph OfflineMode["Explicit Offline Mode"]
-            Offline["Deterministic Provider (Zero Credentials)"]
-        end
-    end
-
-    subgraph Target["🏢 Simulated Operational System (Canonical Incident)"]
-        GW["API Gateway<br/>p99: 2,400ms"]
-        Cache["Redis Cache<br/>34.2% Hit Ratio · Stale Keys"]
-        MQ["Message Queue<br/>42,850 Backlog · Consumer Down"]
-        DB["PostgreSQL DB<br/>92% Pool Load · 1.8ms Direct Probe"]
-    end
-
-    User["👤 Human Operator"] <-->|Reviews & Decides| UI
-    UI <-->|JSON REST API| Orchestrator
-    Orchestrator <-->|Diagnostic Queries & Prompts| Tier1
-    Orchestrator -->|Diagnostic Tools<br/>Telemetry · Probes · Events| Target
-```
-
-> **Key takeaway:** AI models suggest diagnostic queries and draft decision explanations; deterministic Python verifies evidence, calculates scores, and locks down execution safety.
+1. **Receive the alert:** An alarm triggers when services slow down or fail.
+2. **Gather clues from multiple angles:** Faultline checks real customer traffic, direct component tests, and background system logs.
+3. **Spot contradictions:** It reconciles why direct tests pass while real customer requests fail.
+4. **Compare competing repairs:** It ranks several possible fixes by weighing relief speed, long-term safety, and system stability.
+5. **Ask the human engineer:** Faultline presents a plain-English explanation defending its recommendation and waits for an engineer to approve the action. It never executes repairs on its own.
 
 ---
 
-### 2. Functional Workflow (For Non-Technical Audiences)
-
-The 6 core stages of an automated investigation:
-
-```mermaid
-flowchart TD
-    subgraph S1["1. Incident Ingestion"]
-        Alert["🚨 Production Alert<br/>API latency spiking & database connection pool saturated"]
-    end
-
-    subgraph S2["2. Multi-Angle Clue Gathering"]
-        Telemetry["📊 Workload Telemetry<br/>Workload response times & traffic across services"]
-        Probes["🩺 Synthetic Health Probes<br/>Direct component pings & point-in-time test queries"]
-        Logs["📜 Operational Logs<br/>Worker heartbeats, queue backlogs & eviction events"]
-    end
-
-    subgraph S3["3. Conflict Reconciliation"]
-        Tension["⚖️ Scope Tension Resolution<br/>Reconcile why direct probe is healthy (1.8ms) while user workload stalls (92% pool)"]
-    end
-
-    subgraph S4["4. Root-Cause Scoring"]
-        Causes["🔍 Mathematical Cause Scoring<br/>Evaluates full catalogue: Reliability + Freshness + Directness - Source Cap"]
-    end
-
-    subgraph S5["5. 4D Repair Strategy Ranking"]
-        Repairs["🎯 Competing Repair Trade-Offs<br/>Rank full catalogue: Impact 60% · Safety 20% · Speed 15% · Cost 5%"]
-    end
-
-    subgraph S6["6. Validation Gate & Human Decision"]
-        Approval["🛡️ Deterministic Validation Gate → Human Operator<br/>Python validates complete report; human reviews evidence & decides whether to act"]
-    end
-
-    Alert --> Telemetry
-    Alert --> Probes
-    Alert --> Logs
-
-    Telemetry --> Tension
-    Probes --> Tension
-    Logs --> Tension
-
-    Tension --> Causes
-    Causes --> Repairs
-    Repairs --> Approval
-```
-
-> **Key takeaway:** Faultline isolates root causes by reconciling conflicting evidence and ranks repairs by 4D trade-offs before passing through an independent validation gate for human decision.
-
----
-
-### 3. Decision & Trust Boundary
-
-The trusted decision path across AI reasoning and deterministic validation:
+### Step-by-step investigation flow
 
 ```mermaid
 flowchart LR
-    Incident["🚨 Incident Alert"]
-    Investigate["🔍 Investigation"]
-    Evidence["📜 Evidence Ledger"]
-    Causes["⚖️ Root Cause Scoring"]
-    Repairs["🎯 4D Strategy Ranking"]
-    Explain["📝 Decision Explanation"]
-    Validate["🛡️ Deterministic Validation Gate"]
-    Human["👤 Human Operator"]
-
-    AI["🧠 AI Model Cascade<br/>(Gemini / OpenRouter)"]
-    Rules["📐 Authoritative Rules<br/>(Policy & Safety Invariants)"]
-
-    Incident --> Investigate --> Evidence --> Causes --> Repairs --> Explain --> Validate --> Human
-
-    AI -.->|Tool Selection| Investigate
-    AI -.->|Decision Narrative| Explain
-    Rules --> Causes
-    Rules --> Repairs
-    Rules --> Validate
+    Alert["🚨 1. Alert<br/>Website is slow or failing"] --> Clues["🔍 2. Gather Clues<br/>Traffic, health tests & logs"]
+    Clues --> Contradiction["⚖️ 3. Resolve Conflicts<br/>Why tests pass if users fail"]
+    Contradiction --> Repairs["🎯 4. Compare Repairs<br/>Weigh speed vs safety trade-offs"]
+    Repairs --> Human["👤 5. Human Sign-Off<br/>Engineer reviews & decides"]
 ```
 
-> **Key takeaway:** Deterministic Python owns the authoritative pipeline (solid arrows), while AI assists with diagnostic selection and decision explanation (dotted arrows). All outputs pass through Python validation before reaching the operator.
+---
+
+### Who does what: AI explores, Python decides
+
+To keep investigations reliable and trustworthy, Faultline strictly separates AI exploration from rule enforcement:
+
+- **AI (Google Gemini / OpenRouter):** Helps decide which diagnostic tools to check and writes a clear plain-English explanation for the on-call engineer.
+- **Python (Fixed Rules & Math):** Computes all scores, ranks the repairs mathematically, and verifies safety rules before anything reaches the engineer. The AI cannot make up numbers or skip safety checks.
+
+```mermaid
+flowchart LR
+    Incident["🚨 Incident Alert"] --> Investigation["🔍 Investigation"]
+    Investigation --> Evidence["📜 Recorded Clues"]
+    Evidence --> Causes["⚖️ Score Causes"]
+    Causes --> Repairs["🎯 Compare Repairs"]
+    Repairs --> Explain["📝 Plain-English Explanation"]
+    Explain --> Validation["🛡️ Safety & Rule Check"]
+    Validation --> Human["👤 Human Operator"]
+
+    AI["🧠 AI Model<br/>(Exploration & Explanation)"] -.->|Suggests tools| Investigation
+    AI -.->|Drafts explanation| Explain
+    Rules["📐 Fixed Safety Rules<br/>(Deterministic Scoring)"] --> Causes
+    Rules --> Repairs
+    Rules --> Validation
+```
+
 ---
 
 ## Inside Faultline
