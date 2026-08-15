@@ -85,110 +85,58 @@ Faultline evaluates a full repair catalogue — `RECOVER_CONSUMER_AND_DRAIN`, `T
 
 ### 1. End-to-End System & Monitored Target Architecture
 
-The diagram below illustrates how the **Frontend**, **Backend Kernel**, **Multi-Tier AI Cascade**, and **Monitored Production Target** interact during a live investigation, showing real metrics, KPIs, and diagnostic queries exchanged across layers:
+The diagram below illustrates how the **Frontend**, **Backend Engine**, **Multi-Tier AI Cascade**, and **Monitored Production Target** interact during a live investigation, showing real metrics, KPIs, and diagnostic queries exchanged across layers:
 
 ```mermaid
-flowchart TB
-    subgraph UI["Frontend Layer - React 19 Dashboard"]
-        Dash["Observability Dashboard"]
-        Replay["Investigation Replay Scrubber"]
-        TensionView["Scope Tensions & Contradictions Panel"]
-        StratMatrix["4D Strategy Decision Matrix"]
-        SafetyBox["Safety Console & Approval Gate"]
+flowchart TD
+    User["👤 Human SRE / Incident Commander"]
+    
+    subgraph UI["🖥️ Frontend Dashboard (React 19)"]
+        UI_Box["Live Investigation Replay · Scope Tensions · 4D Strategy Matrix · Safety Lock"]
     end
 
-    subgraph Backend["Backend Engine & Authoritative Kernel - FastAPI / Python"]
-        AppRouter["FastAPI Routes & CORS Middleware"]
-        Orchestrator["IncidentOrchestrator State Machine & Tool Budget"]
-        Ledger["Append-Only Evidence Ledger with Immutable IDs"]
-        PolicyEngine["PolicyEngine & ConflictDetector"]
-        Scorer["EvidenceEvaluator & StrategyRanker with 4D Math"]
-        Validator["ReportValidator Authoritative Grounding Gate"]
+    subgraph Backend["⚙️ Faultline Core Engine (FastAPI & Deterministic Kernel)"]
+        API["API Orchestrator & State Machine"]
+        Kernel["Deterministic Authority & Validation Gate<br/>Policy Rules · Conflict Detector · 4D Math Scorer · Report Validator"]
+        API --- Kernel
     end
 
-    subgraph AI["AI Reasoning Layer - Multi-Tier Cascade"]
-        Provider["LLM Provider Interface - Session-Sticky"]
-        Tier1["Primary: Gemini 3.7 Flash"]
-        Tier2["Fallback: Gemini 3.6 Flash"]
-        Tier3["Tertiary: OpenRouter Gemini 2.0 Flash"]
-        Tier4["Offline Mode: Deterministic Engine"]
+    subgraph AI["🧠 Multi-Tier AI Cascade"]
+        LLM["Google Gemini 3.7 / 3.6 & OpenRouter<br/>Diagnostic Action Selection · Hypothesis Synthesis · Executive Explanations"]
     end
 
-    subgraph Target["Monitored System Target - E-Commerce Platform"]
-        GW["API Gateway - p99: 2400ms, Errors: 12.4% 504"]
-        Cache["Redis Cache - Hit Ratio: 34%, Mem: 1.8GB"]
-        DB["PostgreSQL DB - Pool: 92%, Direct Ping: 1.8ms"]
-        Queue["RabbitMQ - Backlog: 42k msgs, Worker: Dead"]
+    subgraph MonitoredSystem["🏢 Monitored Production Target (E-Commerce Platform)"]
+        GW["🌐 Ingress API Gateway<br/>p99: 2,400ms · 12.4% Errors"]
+        Cache["⚡ Redis Cache Cluster<br/>Hit Ratio: 34% · 42k Queue Backlog"]
+        DB["🗄️ PostgreSQL Database<br/>Pool: 92% (Load) vs 1.8ms (Probe)"]
     end
 
-    User["Human SRE / Operator"] <-->|Browser UI Interaction| Dash
-    Dash <-->|REST API JSON on Port 8000| AppRouter
-
-    AppRouter --> Orchestrator
-    Orchestrator --> Ledger
-    Orchestrator --> PolicyEngine
-    Orchestrator --> Scorer
-    Orchestrator --> Validator
-
-    Orchestrator <-->|Structured Tool Calls & Hypotheses| Provider
-    Provider --> Tier1
-    Tier1 -.->|Tier 2 Fallback| Tier2
-    Tier2 -.->|Tier 3 Fallback| Tier3
-    Tier3 -.->|Offline Fallback| Tier4
-
-    Orchestrator -->|1. Telemetry Query| GW
-    Orchestrator -->|2. Synthetic Probes| DB
-    Orchestrator -->|3. Event Logs| Queue
-    Orchestrator -->|4. Telemetry Query| Cache
+    User <-->|Reviews & Approves| UI
+    UI <-->|JSON REST API on Port 8000| API
+    API <-->|Structured Prompts| LLM
+    API -->|1. Workload Telemetry| GW
+    API -->|2. Event Logs| Cache
+    API -->|3. Synthetic Probes| DB
 ```
 
 ---
 
 ### 2. Functional Workflow (For Non-Technical Audiences)
 
-The diagram below outlines the 6 core functional requirements of an investigation — from the initial alarm to final human sign-off:
+The diagram below outlines the 5 core functional stages of an investigation — from the initial alarm to final human sign-off:
 
 ```mermaid
 flowchart TD
-    subgraph Step1["1. Incident Ingestion"]
-        Alert["Production Alert<br/>'Website is slow or failing'"]
-    end
+    S1["🚨 1. Production Alert Ingestion<br/>Receives alarm: response times spiking & database strained"]
+    S2["🔍 2. Multi-Angle Clue Gathering<br/>Queries telemetry, direct health probes & background worker events"]
+    S3["⚖️ 3. Conflict Reconciliation<br/>Resolves contradictions: direct probe is green, but user queries are stalling"]
+    S4["🎯 4. 4D Repair Strategy Ranking<br/>Scores fixes by Impact 60% · Safety 20% · Speed 15% · Cost 5%"]
+    S5["🛡️ 5. Human-in-the-Loop Sign-Off<br/>Zero automated execution — human operator approves & executes repair"]
 
-    subgraph Step2["2. Multi-Angle Clue Gathering"]
-        T["User Workload Telemetry<br/>Response times & traffic"]
-        P["Synthetic Health Checks<br/>Direct component pings"]
-        E["Operational Logs<br/>Worker heartbeats & queues"]
-    end
-
-    subgraph Step3["3. Conflict Reconciliation"]
-        Reconcile["Reconcile Disagreements<br/>'Why does direct probe pass while users see errors?'"]
-    end
-
-    subgraph Step4["4. Root-Cause Scoring"]
-        Score["Mathematical Cause Evaluation<br/>Score clues by reliability, freshness, and directness"]
-    end
-
-    subgraph Step5["5. Competing Repair Trade-Offs"]
-        Rank["4-Dimensional Repair Ranking<br/>Impact 60% · Safety 20% · Speed 15% · Cost 5%"]
-    end
-
-    subgraph Step6["6. Safety & Human Sign-Off"]
-        Gate["Strict Safety Boundary<br/>Automated execution strictly blocked"]
-        Human["Human Operator Approval<br/>Engineer reviews evidence & executes repair safely"]
-    end
-
-    Alert --> T
-    Alert --> P
-    Alert --> E
-
-    T --> Reconcile
-    P --> Reconcile
-    E --> Reconcile
-
-    Reconcile --> Score
-    Score --> Rank
-    Rank --> Gate
-    Gate --> Human
+    S1 --> S2
+    S2 --> S3
+    S3 --> S4
+    S4 --> S5
 ```
 
 ---
@@ -196,50 +144,18 @@ flowchart TD
 ### 3. Architecture & Decision Pipeline
 
 ```mermaid
-flowchart LR
-    Incident["Software<br/>incident"]
-    Investigate["Faultline<br/>investigates"]
-    Evidence["Clues are<br/>recorded"]
-    Cause["Python compares<br/>possible causes"]
+flowchart TD
+    A["🚨 Incident Alert"] --> B["🔍 Diagnostic Clues Recorded"]
+    B --> C["⚖️ Reconcile Disagreements & Score Causes"]
+    C --> D["🎯 Compare Repairs with 4D Trade-Offs"]
+    D --> E["🛡️ Validate Against Strict Safety Rules"]
+    E --> F["👤 Human Operator Approves & Executes"]
 
-    Compare["Compare repair<br/>choices"]
-
-    A["Recover worker<br/>fixes root cause"]
-    B["Throttle traffic<br/>fast relief"]
-    C["Restart cache<br/>fast but risky"]
-
-    Rank["Python ranks<br/>the repairs"]
-    Validate["Python validates<br/>the result"]
-    Explain["Faultline explains<br/>the recommendation"]
-    Human["Human reviews<br/>& decides"]
-
-    AIInv["AI Model<br/>(Gemini / OpenRouter)"]
-    AIExp["AI Model<br/>(Gemini / OpenRouter)"]
-    Rules["Fixed scoring<br/>& safety rules"]
-
-    Incident --> Investigate
-    Investigate --> Evidence
-    Evidence --> Cause
-    Cause --> Compare
-
-    Compare --> A
-    Compare --> B
-    Compare --> C
-
-    A --> Rank
-    B --> Rank
-    C --> Rank
-
-    Rank --> Validate
-    Validate --> Explain
-    Explain --> Human
-
-    AIInv -.-> Investigate
-    AIExp -.-> Explain
-
-    Rules --> Cause
-    Rules --> Rank
-    Rules --> Validate
+    AI["🧠 AI Model (Gemini / OpenRouter)<br/>Diagnostic Selection & Explanations"] -.->|Reasoning| B
+    AI -.->|Narrative| E
+    Rules["📐 Fixed Policy & Safety Rules<br/>Deterministic Scoring & Grounding"] --> C
+    Rules --> D
+    Rules --> E
 ```
 
 The solid arrows show the trusted decision path: investigate, record evidence, compare possible causes, **compare several competing repairs**, rank them by their trade-offs, validate the result, and explain it to a human — who makes the final decision. AI models (Google Gemini with secondary Gemini and tertiary OpenRouter fallback) assist with investigation and explanation (dotted arrows), while deterministic Python owns evidence recording, conflict detection, scoring, ranking, and validation, guided by fixed scoring and safety rules. The process stops at a human operator — Faultline never executes a repair automatically.
