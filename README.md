@@ -83,6 +83,50 @@ Faultline evaluates a full repair catalogue — `RECOVER_CONSUMER_AND_DRAIN`, `T
 
 ## How Faultline works
 
+### 1. Functional Workflow (For Non-Technical Audiences)
+
+The diagram below outlines the 6 core functional requirements of an investigation — from the initial alarm to final human sign-off:
+
+```mermaid
+flowchart TD
+    subgraph Step1["1. Incident Ingestion"]
+        Alert["🚨 Production Alert<br/><i>'Website is slow or failing'</i>"]
+    end
+
+    subgraph Step2["2. Multi-Angle Clue Gathering"]
+        T["📊 User Workload Telemetry<br/><i>(Response times & traffic)</i>"]
+        P["🩺 Synthetic Health Checks<br/><i>(Direct component pings)</i>"]
+        E["📜 Operational Logs<br/><i>(Worker heartbeats & queues)</i>"]
+    end
+
+    subgraph Step3["3. Conflict Reconciliation"]
+        Reconcile["⚖️ Reconcile Disagreements<br/><i>'Why does a direct health test pass while users see errors?'</i>"]
+    end
+
+    subgraph Step4["4. Root-Cause Scoring"]
+        Score["🔍 Mathematical Cause Evaluation<br/><i>Score clues by reliability, freshness, and directness</i>"]
+    end
+
+    subgraph Step5["5. Competing Repair Trade-Offs"]
+        Rank["🎯 4-Dimensional Repair Ranking<br/><i>Impact (60%) · Safety (20%) · Speed (15%) · Cost (5%)</i>"]
+    end
+
+    subgraph Step6["6. Safety & Human Sign-Off"]
+        Gate["🛡️ Strict Safety Boundary<br/><i>Automated execution strictly blocked</i>"]
+        Human["👤 Human Operator Approval<br/><i>Engineer reviews evidence & executes repair safely</i>"]
+    end
+
+    Alert --> T & P & E
+    T & P & E --> Reconcile
+    Reconcile --> Score
+    Score --> Rank
+    Rank --> Gate --> Human
+```
+
+---
+
+### 2. Architecture & Decision Pipeline
+
 ```mermaid
 flowchart LR
     Incident["Software<br/>incident"]
