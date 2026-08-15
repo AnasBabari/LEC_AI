@@ -85,49 +85,121 @@ Faultline evaluates a full repair catalogue — `RECOVER_CONSUMER_AND_DRAIN`, `T
 
 ### 1. End-to-End System & Monitored Target Architecture
 
+How the **Frontend**, **Backend Kernel**, **AI Cascade**, and **Monitored Systems** interact:
+
 ```mermaid
-flowchart LR
-    User["👤 Human Operator"] <-->|Reviews & Approves| UI["🖥️ React Dashboard"]
-    UI <-->|REST API| Backend["⚙️ Faultline Engine<br/><i>(State Machine & 4D Kernel)</i>"]
-    Backend <-->|Reasoning| AI["🧠 Multi-Tier AI<br/><i>(Gemini / OpenRouter)</i>"]
-    Backend -->|Diagnostics| Target["🏢 Monitored System<br/><i>(Gateway · Cache · DB)</i>"]
+flowchart TB
+    subgraph UI["🖥️ Frontend Dashboard (React 19)"]
+        Dash["Observability Views · Replay Timeline · Scope Tensions · 4D Matrix · Safety Lock"]
+    end
+
+    subgraph Backend["⚙️ Faultline Engine & Authoritative Kernel (FastAPI / Python)"]
+        Orchestrator["Investigation Orchestrator & Tool Budget"]
+        Ledger["Append-Only Evidence Ledger (Immutable IDs)"]
+        Engine["Policy Engine · Conflict Detector · 4D Math Scorer"]
+        Validator["Report Validator (Safety & Grounding Gate)"]
+        Orchestrator --> Ledger --> Engine --> Validator
+    end
+
+    subgraph AI["🧠 Multi-Tier AI Cascade"]
+        Tier1["Primary: Gemini 3.7 Flash"]
+        Tier2["Fallback: Gemini 3.6 Flash"]
+        Tier3["Tertiary: OpenRouter Gemini 2.0"]
+        Tier4["Offline: Deterministic Engine"]
+        Tier1 -.-> Tier2 -.-> Tier3 -.-> Tier4
+    end
+
+    subgraph MonitoredSystem["🏢 Monitored System (E-Commerce Platform)"]
+        GW["API Gateway · p99: 2,400ms · 12.4% HTTP 504"]
+        Cache["Redis Cache · 34% Hit Ratio · 42k Queue Backlog"]
+        DB["PostgreSQL DB · 92% Pool Load · 1.8ms Direct Ping"]
+    end
+
+    User["👤 Human Operator"] <-->|Reviews & Approves| UI
+    UI <-->|JSON REST API| Orchestrator
+    Orchestrator <-->|Structured Prompts| Tier1
+    Orchestrator -->|1. Workload Telemetry| GW
+    Orchestrator -->|2. Operational Events| Cache
+    Orchestrator -->|3. Synthetic Health Probes| DB
 ```
+
+> **Key takeaway:** AI models suggest diagnostic tool queries and draft narrative hypotheses; deterministic Python verifies facts, calculates scores, and locks down execution safety.
 
 ---
 
 ### 2. Functional Workflow (For Non-Technical Audiences)
 
-The 5 core functional stages of an investigation — from initial alarm to final human sign-off:
+The 5 core stages of an automated investigation:
 
 ```mermaid
-flowchart LR
-    S1["🚨 1. Alert<br/>Ingestion"] --> S2["🔍 2. Evidence<br/>Gathering"]
-    S2 --> S3["⚖️ 3. Conflict<br/>Reconciliation"]
-    S3 --> S4["🎯 4. 4D Strategy<br/>Ranking"]
-    S4 --> S5["🛡️ 5. Human<br/>Approval"]
+flowchart TD
+    subgraph S1["1. Incident Ingestion"]
+        Alert["🚨 Production Alert<br/>API latency spiking & database connection pool saturated"]
+    end
+
+    subgraph S2["2. Multi-Angle Clue Gathering"]
+        Telemetry["📊 Workload Telemetry<br/>Live user response times & traffic"]
+        Probes["🩺 Synthetic Health Probes<br/>Direct component pings & test queries"]
+        Logs["📜 Operational Logs<br/>Worker heartbeats, queues & eviction events"]
+    end
+
+    subgraph S3["3. Conflict Reconciliation"]
+        Tension["⚖️ Scope Tension Resolution<br/>Reconcile why direct probe is healthy while user queries stall"]
+    end
+
+    subgraph S4["4. Root-Cause & Strategy Ranking"]
+        Causes["🔍 Mathematical Cause Scoring<br/>Reliability + Freshness + Directness"]
+        Repairs["🎯 4D Repair Strategy Ranking<br/>Impact 60% · Safety 20% · Speed 15% · Cost 5%"]
+    end
+
+    subgraph S5["5. Human-in-the-Loop Sign-Off"]
+        Approval["🛡️ Human Operator Approval<br/>Zero automated execution — human reviews evidence and executes fix"]
+    end
+
+    Alert --> Telemetry
+    Alert --> Probes
+    Alert --> Logs
+
+    Telemetry --> Tension
+    Probes --> Tension
+    Logs --> Tension
+
+    Tension --> Causes
+    Causes --> Repairs
+    Repairs --> Approval
 ```
+
+> **Key takeaway:** Faultline isolates root causes by reconciling conflicting evidence and ranks repairs by 4D trade-offs before presenting them for human sign-off.
 
 ---
 
 ### 3. Architecture & Decision Pipeline
 
+The trusted decision path across AI reasoning and deterministic validation:
+
 ```mermaid
 flowchart LR
-    Incident["🚨 Incident"] --> Investigate["🔍 Investigation"]
-    Investigate --> Evidence["📜 Evidence"]
-    Evidence --> Cause["⚖️ Root Cause"]
-    Cause --> Repairs["🎯 4D Repairs"]
-    Repairs --> Human["👤 Human Gate"]
+    Incident["🚨 Incident Alert"]
+    Investigate["🔍 Investigation"]
+    Evidence["📜 Evidence Ledger"]
+    Causes["⚖️ Root Cause Scoring"]
+    Repairs["🎯 4D Strategy Ranking"]
+    Validate["🛡️ Policy Validation"]
+    Human["👤 Human Sign-Off"]
 
-    AI["🧠 AI Model"] -.->|Reasoning| Investigate
-    AI -.->|Narrative| Human
-    Rules["📐 Policy Rules"] --> Cause
+    AI["🧠 AI Model Cascade<br/>(Gemini / OpenRouter)"]
+    Rules["📐 Authoritative Rules<br/>(Policy & Safety Invariants)"]
+
+    Incident --> Investigate --> Evidence --> Causes --> Repairs --> Validate --> Human
+
+    AI -.->|Tool Selection| Investigate
+    AI -.->|Narrative Drafts| Validate
+    Rules --> Causes
     Rules --> Repairs
+    Rules --> Validate
 ```
 
-The solid arrows show the trusted decision path: investigate, record evidence, compare possible causes, **compare several competing repairs**, rank them by their trade-offs, validate the result, and explain it to a human — who makes the final decision. AI models (Google Gemini with secondary Gemini and tertiary OpenRouter fallback) assist with investigation and explanation (dotted arrows), while deterministic Python owns evidence recording, conflict detection, scoring, ranking, and validation, guided by fixed scoring and safety rules. The process stops at a human operator — Faultline never executes a repair automatically.
-
-> The diagram highlights three representative choices from the canonical incident. Faultline evaluates the full repair catalogue before producing its ranking.
+> **Key takeaway:** Deterministic Python owns the authoritative pipeline (solid arrows), while AI assists with diagnostic selection and post-mortem narrative synthesis (dotted arrows).
 
 ---
 
