@@ -83,57 +83,133 @@ Faultline evaluates a full repair catalogue — `RECOVER_CONSUMER_AND_DRAIN`, `T
 
 ## How Faultline works
 
-When a software system breaks in production, on-call engineers face two tough problems:
-1. **Misleading clues:** Different monitoring tools often disagree. For example, a direct database test might say "Healthy", while real customer requests are timing out.
-2. **Risky shortcuts:** The fastest fix (like restarting a cache) often makes the outage worse by crashing an already overloaded database.
+### 1. System Overview & Monitored Application
 
-Faultline solves this with a clear 5-step process:
-
-1. **Receive the alert:** An alarm triggers when services slow down or fail.
-2. **Gather clues from multiple angles:** Faultline checks real customer traffic, direct component tests, and background system logs.
-3. **Spot contradictions:** It reconciles why direct tests pass while real customer requests fail.
-4. **Compare competing repairs:** It ranks several possible fixes by weighing relief speed, long-term safety, and system stability.
-5. **Ask the human engineer:** Faultline presents a plain-English explanation defending its recommendation and waits for an engineer to approve the action. It never executes repairs on its own.
-
----
-
-### Step-by-step investigation flow
+How the **Web Dashboard**, **Decision Engine**, **AI Assistants**, and **Monitored App** work together:
 
 ```mermaid
-flowchart LR
-    Alert["🚨 1. Alert<br/>Website is slow or failing"] --> Clues["🔍 2. Gather Clues<br/>Traffic, health tests & logs"]
-    Clues --> Contradiction["⚖️ 3. Resolve Conflicts<br/>Why tests pass if users fail"]
-    Contradiction --> Repairs["🎯 4. Compare Repairs<br/>Weigh speed vs safety trade-offs"]
-    Repairs --> Human["👤 5. Human Sign-Off<br/>Engineer reviews & decides"]
+flowchart TB
+    subgraph UI["🖥️ Web Dashboard (React)"]
+        Dash["Investigation Timeline · Clue Inspector · Fix Comparison · Safety Locks"]
+    end
+
+    subgraph Backend["⚙️ Faultline Decision Engine (Python)"]
+        Orchestrator["Investigation Coordinator"]
+        Ledger["Recorded Evidence Ledger"]
+        Engine["Scoring Rules & Conflict Detector"]
+        Validator["Safety & Verification Gate"]
+        Orchestrator --> Ledger --> Engine --> Validator
+    end
+
+    subgraph AI["🧠 AI Assistants (Google Gemini / OpenRouter)"]
+        subgraph LiveMode["Live AI Models"]
+            Primary["Primary AI: Gemini 3.7"]
+            Backup["Backup AI: Gemini 3.6"]
+            Tertiary["Third-Tier Backup: OpenRouter"]
+            Primary -. If Busy .-> Backup -. If Offline .-> Tertiary
+        end
+        subgraph OfflineMode["Offline Mode"]
+            Offline["Built-in Simulator (No API Keys Required)"]
+        end
+    end
+
+    subgraph Target["🏢 Simulated Web Application (E-Commerce)"]
+        GW["API Gateway<br/>Response Time: 2.4s"]
+        Cache["Redis Cache<br/>Stale Content · 34% Hit Rate"]
+        MQ["Message Queue<br/>42k Unprocessed Messages · Worker Stopped"]
+        DB["PostgreSQL Database<br/>92% Connection Load · 1.8ms Health Check"]
+    end
+
+    User["👤 Human Engineer"] <-->|Reviews & Approves| UI
+    UI <-->|Web Requests| Orchestrator
+    Orchestrator <-->|Reasoning Prompts| Primary
+    Orchestrator -->|Checks Diagnostics<br/>Traffic · Health Tests · Logs| Target
 ```
 
+> **Key takeaway:** AI assistants suggest diagnostic queries and draft plain-English explanations; Python computes all scores, verifies evidence, and enforces strict safety rules.
+
 ---
 
-### Who does what: AI explores, Python decides
+### 2. Step-by-Step Investigation Flow
 
-To keep investigations reliable and trustworthy, Faultline strictly separates AI exploration from rule enforcement:
+The 6 core stages of an automated investigation:
 
-- **AI (Google Gemini / OpenRouter):** Helps decide which diagnostic tools to check and writes a clear plain-English explanation for the on-call engineer.
-- **Python (Fixed Rules & Math):** Computes all scores, ranks the repairs mathematically, and verifies safety rules before anything reaches the engineer. The AI cannot make up numbers or skip safety checks.
+```mermaid
+flowchart TD
+    subgraph S1["1. Incident Alert"]
+        Alert["🚨 Outage Detected<br/>Customers report slow pages and database timeouts"]
+    end
+
+    subgraph S2["2. Collect Clues"]
+        Telemetry["📊 Customer Traffic<br/>Real page load times & traffic levels across services"]
+        Probes["🩺 Direct Health Tests<br/>Direct pings and test queries to database & cache"]
+        Logs["📜 Background System Logs<br/>Worker status, queue backlogs & error records"]
+    end
+
+    subgraph S3["3. Spot Contradictions"]
+        Tension["⚖️ Reconcile Conflicting Clues<br/>Understand why direct tests say 'Healthy' (1.8ms) while real customer queries stall (92% load)"]
+    end
+
+    subgraph S4["4. Find the Root Cause"]
+        Causes["🔍 Score Suspected Causes<br/>Weigh clue credibility, freshness, and direct connection to the problem"]
+    end
+
+    subgraph S5["5. Compare Solutions"]
+        Repairs["🎯 Weigh Competing Fixes<br/>Rank repairs by balancing relief speed, long-term safety, and system risk"]
+    end
+
+    subgraph S6["6. Safety Check & Human Decision"]
+        Approval["🛡️ Verify Safety Rules → Human Sign-Off<br/>Code verifies all facts and safety limits; engineer makes the final call"]
+    end
+
+    Alert --> Telemetry
+    Alert --> Probes
+    Alert --> Logs
+
+    Telemetry --> Tension
+    Probes --> Tension
+    Logs --> Tension
+
+    Tension --> Causes
+    Causes --> Repairs
+    Repairs --> Approval
+```
+
+> **Key takeaway:** Faultline pinpoints what broke by reconciling contradictory clues and ranks repairs by weighing trade-offs before passing through safety checks for human approval.
+
+---
+
+### 3. Who Does What: Decision & Trust Boundary
+
+How AI exploration and fixed safety rules interact:
 
 ```mermaid
 flowchart LR
-    Incident["🚨 Incident Alert"] --> Investigation["🔍 Investigation"]
-    Investigation --> Evidence["📜 Recorded Clues"]
-    Evidence --> Causes["⚖️ Score Causes"]
-    Causes --> Repairs["🎯 Compare Repairs"]
-    Repairs --> Explain["📝 Plain-English Explanation"]
-    Explain --> Validation["🛡️ Safety & Rule Check"]
-    Validation --> Human["👤 Human Operator"]
+    Incident["🚨 Problem Alert"]
+    Investigate["🔍 Investigate"]
+    Evidence["📜 Record Clues"]
+    Causes["⚖️ Score Causes"]
+    Repairs["🎯 Rank Repairs"]
+    Explain["📝 Explain Decision"]
+    Validate["🛡️ Verify Safety Rules"]
+    Human["👤 Human Engineer"]
 
-    AI["🧠 AI Model<br/>(Exploration & Explanation)"] -.->|Suggests tools| Investigation
+    AI["🧠 AI Assistant<br/>(Gemini / OpenRouter)"]
+    Rules["📐 Fixed Safety Rules<br/>(Scoring & Fact-Checking)"]
+
+    Incident --> Investigate --> Evidence --> Causes --> Repairs --> Explain --> Validate --> Human
+
+    AI -.->|Suggests tools| Investigate
     AI -.->|Drafts explanation| Explain
-    Rules["📐 Fixed Safety Rules<br/>(Deterministic Scoring)"] --> Causes
+    Rules --> Causes
     Rules --> Repairs
-    Rules --> Validation
+    Rules --> Validate
 ```
 
+> **Key takeaway:** Python owns the decision pipeline (solid arrows), while AI assists with tool suggestions and plain-English explanations (dotted arrows). All outputs pass through safety checks before reaching the engineer.
+
 ---
+
 
 ## Inside Faultline
 
