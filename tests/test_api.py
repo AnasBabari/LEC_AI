@@ -175,3 +175,45 @@ def test_generate_incident_endpoint() -> None:
         assert analysis["state"] == "VALIDATED"
         assert len(analysis["strategy_ranking"]) == 5
 
+
+def test_cli_list_scenarios(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify CLI list-scenarios prints available scenarios."""
+    from faultline import cli
+
+    monkeypatch.setattr("sys.argv", ["faultline", "list-scenarios"])
+    cli.main()
+    captured = capsys.readouterr()
+    assert "Available scenarios" in captured.out
+    assert "cache_invalidation_lag" in captured.out
+
+
+def test_cli_analyze_offline(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify CLI analyze runs in offline mode and outputs JSON report."""
+    from faultline import cli
+
+    monkeypatch.setattr("sys.argv", ["faultline", "analyze", "--scenario", "cache_invalidation_lag", "--json", "--offline"])
+    cli.main()
+    captured = capsys.readouterr()
+    import json
+    data = json.loads(captured.out)
+    assert data["scenario_id"] == "cache_invalidation_lag"
+    assert data["state"] == "VALIDATED"
+    assert len(data["strategy_ranking"]) == 5
+
+
+def test_cli_openrouter_provider_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify CLI initializes GeminiProvider with openrouter_api_key when only OPENROUTER_API_KEY is present."""
+    from faultline import cli
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-testkey123")
+    monkeypatch.delenv("FAULTLINE_OFFLINE", raising=False)
+    monkeypatch.setattr("sys.argv", ["faultline", "analyze", "--scenario", "cache_invalidation_lag", "--json"])
+
+    mock_orch = MagicMock()
+    mock_orch.analyze_scenario.return_value = MagicMock(model_dump=lambda **kw: {"scenario_id": "test", "state": "VALIDATED"})
+    monkeypatch.setattr(cli, "IncidentOrchestrator", lambda provider, policy, scenario_repo: mock_orch)
+
+    cli.main()
+    assert mock_orch.analyze_scenario.called
+

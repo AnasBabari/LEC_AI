@@ -1,11 +1,14 @@
 # Faultline — AI-Assisted Detective for Software Outages
 
-> Faultline gathers conflicting clues about why a system broke, works out what probably went wrong, compares several possible repairs with different trade-offs, and ranks the safest one — without executing anything automatically.
+> Faultline gathers conflicting clues about why a system broke, ranks the most strongly supported causes, compares possible repairs across impact, safety, speed and cost, and recommends the best trade-off — without executing anything automatically.
 
 [![CI](https://github.com/AnasBabari/LEC_AI/actions/workflows/ci.yml/badge.svg)](https://github.com/AnasBabari/LEC_AI/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python&logoColor=white)](https://python.org)
 [![React](https://img.shields.io/badge/React-19-61DAFB.svg?logo=react&logoColor=black)](https://react.dev)
+
+> [!NOTE]
+> **Prototype boundary:** Faultline currently investigates simulated distributed-system incidents. Its telemetry, health probes, and operational events come from deterministic fixtures or a procedural incident generator rather than live infrastructure. The decision engine, evidence reconciliation, scoring, validation, model orchestration, and dashboard are fully implemented; live observability integrations are future work.
 
 **Start here:** [What it solves](#what-problem-does-faultline-solve) · [Example investigation](#a-simple-example) · [Three possible repairs](#three-possible-repairs) · [Architecture](#how-faultline-works) · [Run it](#try-it-yourself) · [Inside Faultline](#inside-faultline)
 
@@ -13,24 +16,25 @@
 
 ## What problem does Faultline solve?
 
-Large websites depend on many parts working together: databases, caches, message queues, gateways. When something goes wrong, monitoring tools often give **conflicting clues**.
+Large web architectures depend on many interconnected components: API gateways, caches, message queues, and relational databases. When an incident occurs, diagnostic streams often provide **conflicting clues**:
 
-One tool might say *"the database is overloaded."*
-Another might say *"the database is perfectly healthy."*
-A third might report *"a background worker has stopped."*
+- Ingress telemetry reports *"database queries are stalling and connection pools are full."*
+- Direct health checks report *"database engine responds in 1.8 ms with healthy CPU."*
+- Operational logs report *"an invalidation queue consumer worker crashed 18 minutes ago."*
 
-A human engineer now has to decide:
+A human incident responder must determine:
+1. Which clues reflect the actual underlying fault versus downstream symptoms?
+2. Why do direct synthetic tests disagree with production workload telemetry?
+3. What is the most strongly supported root cause?
+4. Which remediation action offers the best trade-off between speed, safety, and recovery?
 
-- Which clues matter?
-- Which clues disagree, and why?
-- What actually caused the problem?
-- Which of several possible repairs is safest to try first?
-
-Faultline automates the investigation. It collects clues from independent sources, identifies where they conflict, scores possible causes against the evidence, compares competing repairs with different trade-offs, and ranks them — then hands everything to a human operator to decide what to do.
+Faultline automates this investigation over simulated diagnostic streams. It gathers observations across independent diagnostic source groups, identifies scope tensions, scores candidate root causes against evidence, compares competing repairs across four weighted dimensions, and recommends the optimal trade-off — leaving execution authority strictly with the human operator.
 
 > **Faultline recommends actions. It never executes them.**
 >
-> It can say *"restart this worker first,"* but it cannot press the button itself. A human must approve and perform any repair.
+> `execution_status = "not_executed"` · `operator_approval_required = True`
+>
+> It can suggest an operational remediation command, but it cannot execute subprocesses or modify infrastructure. A human operator must review and perform any repair.
 
 ---
 
@@ -38,46 +42,30 @@ Faultline automates the investigation. It collects clues from independent source
 
 ### The website suddenly becomes slow
 
-A monitoring alert fires: *"API response times are spiking. The database looks overwhelmed."*
+A monitoring alert fires: *"API response times are spiking. Database load is elevated."*
 
-Faultline investigates.
+Faultline investigates across diagnostic source groups:
 
-**Clue 1 — The symptoms.**
-Website response times have jumped to 2400 ms. The database is handling a huge number of connections (92% of its capacity). The *cache* — a small shelf of frequently used information that lets the system answer common requests quickly — has dropped from 92% useful to just 34%.
+1. **Workload Telemetry**: End-to-end response times have risen to 2400 ms. Database connection pool saturation is at 92%. Cache hit ratio has dropped from 92% to 34%. At first glance, the database appears overloaded.
+2. **Direct Health Probes**: A direct synthetic health ping to the database responds in 1.8 ms with low CPU. The database engine itself is functional — something upstream is flooding it with unbuffered queries.
+3. **Operational Logs**: A background queue consumer worker responsible for processing cache invalidation messages crashed. An unconsumed backlog of 42,000 messages has accumulated.
+4. **Causal Chain**: Stale cache entries forced high cache-miss rates, directing traffic straight to the primary database. The database is healthy in isolation, but overwhelmed by upstream invalidation failure.
 
-At first, the database looks guilty.
-
-**Clue 2 — A direct health check.**
-Faultline sends a direct test query to the database. It responds in 1.8 ms with low CPU usage.
-
-So the database engine itself is not broken. Something else is flooding it with work.
-
-**Clue 3 — The real culprit.**
-A *background worker* — a small program that quietly handles jobs behind the scenes — was responsible for keeping the cache up to date. It crashed 18 minutes ago. Since then, 42,000 pending update messages have piled up.
-
-**Clue 4 — The chain reaction.**
-Because the cache is stale, thousands of requests that would normally be answered instantly are being sent straight to the database instead. The database is healthy but overwhelmed by upstream failure.
-
-**The clues appear to disagree — but both are true.**
-The database can be healthy when tested directly while still being overwhelmed by thousands of real user requests. Faultline calls this kind of situation a *"scope tension"*: two measurements that seem contradictory because they are looking at different angles of the same component.
+**Scope tension reconciled:** Direct probes test primary key lookup latency on an idle connection, whereas workload telemetry reflects aggregate throughput under cache miss pressure. Both signals are truthful; their apparent contradiction is explained by the stalled queue consumer.
 
 ---
 
 ## Three possible repairs
 
-Faultline now has to choose between several plausible actions. Three stand out:
+Faultline evaluates candidate remediation strategies from a policy catalogue. For this incident, three primary choices illustrate the trade-off:
 
-| Choice | Why it looks attractive | Main problem | Result |
-|---|---|---|---|
-| **Restart the failed cache worker and drain its backlog** | Fixes the source of the stale cache | The backlog takes time to clear | **#1** |
-| **Temporarily slow down incoming traffic** | Quickly reduces pressure on the database and surrounding system | Treats the symptom rather than repairing the failed worker | **#2** |
-| **Flush and restart the cache** | Fastest action | Could create a cache stampede and worsen database load | **#3** |
+| Choice | Why it looks attractive | Operational risk | Rank |
+|---|---|---|:---:|
+| **Restart worker and drain backlog** | Resolves the root cause of stale cache entries | Backlog requires time to drain | **#1 (Winner)** |
+| **Temporarily throttle incoming traffic** | Immediately relieves downstream database pressure | Treats symptom; does not fix consumer | **#2** |
+| **Flush and restart the cache** | Fastest execution | Risks 100% cache stampede onto database | **#3** |
 
-**The fastest repair is not the winner.** Faultline chooses the first option because it addresses the root cause while keeping operational risk acceptable.
-
-This is the central challenge Faultline is designed around: the most obvious repair is not always the best one. Restarting the cache is faster, and throttling traffic reduces pressure quickly, but recovering the failed worker is ranked first because it fixes the underlying cause with lower downstream risk.
-
-Faultline evaluates a full repair catalogue — `RECOVER_CONSUMER_AND_DRAIN`, `THROTTLE_TRAFFIC`, `RESTART_CACHE`, `REBUILD_DATABASE_INDEX`, `FAILOVER_DATABASE`. These three choices illustrate the most important trade-off in the main scenario.
+**The fastest repair is not the winner.** Faultline ranks the first option highest because it addresses the true root cause with acceptable operational safety.
 
 ---
 
@@ -85,7 +73,7 @@ Faultline evaluates a full repair catalogue — `RECOVER_CONSUMER_AND_DRAIN`, `T
 
 ### 1. System Overview & Monitored Application
 
-How the **Web Dashboard**, **Decision Engine**, **AI Assistants**, and **Monitored App** work together:
+How the **Web Dashboard**, **Decision Engine**, **AI Assistants**, and **Monitored Systems** interact:
 
 ```mermaid
 flowchart TB
@@ -126,13 +114,11 @@ flowchart TB
     Orchestrator -->|Checks Diagnostics<br/><i>Traffic · Probes · Logs</i>| Target
 ```
 
-> **Key takeaway:** AI assistants suggest diagnostic queries and draft plain-English explanations; Python computes all scores, verifies evidence, and enforces strict safety rules.
+> **Key takeaway:** AI assistants suggest diagnostic queries and draft plain-English explanations; deterministic Python computes all scores, verifies evidence, and enforces strict safety boundaries.
 
 ---
 
 ### 2. Step-by-Step Investigation Flow
-
-The 6 core stages of an automated investigation:
 
 ```mermaid
 flowchart TD
@@ -140,26 +126,26 @@ flowchart TD
         Alert["🚨 Outage Detected<br/><i>e.g. High latency alerts<br/>and database timeouts</i>"]
     end
 
-    subgraph S2["2. Collect Clues"]
+    subgraph S2["2. Collect Evidence"]
         Telemetry["📊 Traffic Telemetry<br/><i>e.g. Slow user requests<br/>and degraded latency</i>"]
         Probes["🩺 Direct Health Tests<br/><i>e.g. Fast ping tests<br/>to database & cache</i>"]
         Logs["📜 Background Logs<br/><i>e.g. Worker crashes<br/>and queue depth</i>"]
     end
 
-    subgraph S3["3. Spot Contradictions"]
-        Tension["⚖️ Reconcile Conflicting Clues<br/><i>e.g. Direct test is 1.8ms (OK) while<br/>customer queries stall (92% load)</i>"]
+    subgraph S3["3. Reconcile Contradictions"]
+        Tension["⚖️ Reconcile Scope Tensions<br/><i>e.g. Direct test is 1.8ms (OK) while<br/>workload queries stall (92% load)</i>"]
     end
 
-    subgraph S4["4. Find the Root Cause"]
-        Causes["🔍 Score Suspected Causes<br/><i>Weigh clue reliability, freshness,<br/>and direct causal connection</i>"]
+    subgraph S4["4. Score Catalogue Hypotheses"]
+        Causes["🔍 Score Candidate Causes<br/><i>Weigh evidence reliability, freshness,<br/>and direct causal connection</i>"]
     end
 
     subgraph S5["5. Compare Solutions"]
-        Repairs["🎯 Weigh Competing Fixes<br/><i>Balance relief speed, long-term<br/>safety, and system risk</i>"]
+        Repairs["🎯 Rank Candidate Fixes<br/><i>Balance impact, safety,<br/>speed, and affordability</i>"]
     end
 
-    subgraph S6["6. Safety Check & Human Decision"]
-        Approval["🛡️ Safety Rules & Human Sign-Off<br/><i>Code verifies all rules;<br/>engineer makes final decision</i>"]
+    subgraph S6["6. Safety Check & Operator Sign-Off"]
+        Approval["🛡️ Safety Rules & Human Sign-Off<br/><i>Independent recomputation;<br/>operator makes final decision</i>"]
     end
 
     Alert --> Telemetry
@@ -175,19 +161,17 @@ flowchart TD
     Repairs --> Approval
 ```
 
-> **Key takeaway:** Faultline pinpoints what broke by reconciling contradictory clues and ranks repairs by weighing trade-offs before passing through safety checks for human approval.
+> **Key takeaway:** Faultline reconciles contradictory observations and ranks the most strongly supported root-cause hypothesis from a policy-controlled catalogue, then compares candidate repairs by weighing trade-offs before passing through independent safety checks.
 
 ---
 
 ### 3. Who Does What: Decision & Trust Boundary
 
-How AI exploration and fixed safety rules interact:
-
 ```mermaid
 flowchart LR
     Incident["🚨 Problem Alert"]
     Investigate["🔍 Investigate"]
-    Evidence["📜 Record Clues"]
+    Evidence["📜 Record Evidence"]
     Causes["⚖️ Score Causes"]
     Repairs["🎯 Rank Repairs"]
     Explain["📝 Explain Decision"]
@@ -206,198 +190,125 @@ flowchart LR
     Rules --> Validate
 ```
 
-> **Key takeaway:** Python owns the decision pipeline (solid arrows), while AI assists with tool suggestions and plain-English explanations (dotted arrows). All outputs pass through safety checks before reaching the engineer.
-
 ---
-
 
 ## Inside Faultline
 
 ### AI investigates, Python decides
 
-Faultline pairs AI reasoning models (Google Gemini with multi-tier OpenRouter fallback) with deterministic Python code, with clearly separated jobs.
+Faultline pairs LLM reasoning models (Google Gemini with multi-tier OpenRouter fallback) with deterministic Python rule engines:
 
-The AI model helps decide:
+- **AI model role**: Chooses which diagnostic tools to invoke, suggests candidate hypotheses from the allowed catalogue, and drafts plain-English narrative summaries.
+- **Python engine role**: Assigns immutable evidence IDs, verifies observation grounding, enforces source-group caps, computes conflict tensions, calculates mathematical scores, sorts strategy rankings, and executes authoritative recomputation validation.
 
-- which diagnostics to inspect;
-- which allowed root causes are worth investigating;
-- how to explain the result to a human.
+### Evidence Scoring Formula
 
-Python owns:
+An observation's numerical strength is computed deterministically:
 
-- evidence IDs;
-- whether evidence actually exists;
-- whether evidence actually supports a cause;
-- conflict classification;
-- numeric scores;
-- strategy ranking;
-- safety checks;
-- final validation.
+$$\text{Evidence Strength} = \text{Reliability} + \text{Freshness} + \text{Directness}$$
 
-> The AI model assists with reasoning, but deterministic Python owns decision authority.
-
-Here, *deterministic* simply means that the same evidence and the same fixed rules produce the same numerical result. Every run over the same data produces identical scores and rankings.
-
-### How clues are scored
-
-A clue becomes stronger when it is:
-
-- trustworthy;
-- recent;
-- directly related to the suspected problem.
-
-```text
-Evidence Strength =
-Reliability + Freshness + Directness
-```
-
-| Part | What it measures | Values |
+| Dimension | Definition | Scale |
 | :--- | :--- | :--- |
-| **Reliability** | How trustworthy the source is | Verified (3) · Aggregated (2) · Advisory (1) |
-| **Freshness** | How close in time to the incident | Current (2) · Recent (1) · Stale (0) |
-| **Directness** | How directly it connects to the cause | Direct (3) · Indirect (2) · Contextual (1) |
+| **Reliability** | Source authority | Verified (3) · Aggregated (2) · Advisory (1) |
+| **Freshness** | Temporal proximity | Current (2) · Recent (1) · Stale (0) |
+| **Directness** | Causal proximity | Direct (3) · Indirect (2) · Contextual (1) |
 
-### The source-group cap
+### The Source-Group Cap
 
-Ten measurements produced by the same monitoring system should not automatically count like ten independent opinions. Ten people repeating the same rumour are not the same as ten independent witnesses.
+To prevent correlated signals from a single monitoring domain from dominating the score, Faultline enforces a **source-group cap**: only the strongest observation from each diagnostic source group (`telemetry`, `health_probe`, `operational_event`) contributes numerically to a hypothesis score. Additional observations remain recorded in the immutable ledger for context.
 
-Faultline therefore limits how much evidence from the same source group can contribute to the numerical score — the `source-group cap`. Additional correlated measurements are still recorded as clues, but they cannot inflate a cause's score.
+$$\text{Net Score} = \max(0, \text{Capped Support} - \text{Capped Opposition})$$
 
-### Support vs opposition
+### Strategy Ranking Multi-Dimensional Weights
 
-```text
-Net Evidence =
-max(0, Support - Opposition)
-```
+Candidate repairs are evaluated across four weighted dimensions:
 
-Evidence supporting a cause increases its score. Evidence contradicting that cause reduces it. If the opposition becomes stronger than the support, Faultline treats that cause as having zero usable evidence rather than a negative score.
+$$\text{Final Score} = 0.60 \times \text{Impact} + 0.20 \times \text{Safety} + 0.15 \times \text{Speed} + 0.05 \times \text{Affordability}$$
 
-### Decision weights
-
-Decision weights are policy-derived ratios, not probabilities. In the canonical incident, 73.7% of the positive policy-weighted evidence points toward the stalled cache-invalidation worker. That describes how the evidence is split between candidate causes — it is not a claim that the cause is "73.7% likely" to be right.
-
-### How repairs are ranked
-
-Each repair is judged on four questions:
-
-1. Will it solve the real problem? *(Impact)*
-2. Is it safe? *(Safety)*
-3. How quickly can it help? *(Speed)*
-4. How expensive or difficult is it? *(Cost)*
-
-| Factor | Weight |
-| :--- | ---: |
-| Impact | 60% |
-| Safety | 20% |
-| Speed | 15% |
-| Cost | 5% |
-
-Impact receives the largest weight because a very fast repair for the wrong problem is still the wrong repair.
-
-### Why the canonical ranking lands as it does
-
-**Restart the failed cache worker and drain its backlog — #1.** It wins because it addresses the root cause, is backed by strong evidence for a stalled consumer, avoids destructive cache behaviour, and carries reasonable operational safety.
-
-**Temporarily slow down incoming traffic — #2.** It is useful because it reduces immediate system pressure, is relatively safe, and fairly fast. It loses because it does not repair the stalled worker, and the workload returns once throttling is removed.
-
-**Flush and restart the cache — #3.** It is attractive because it is the fastest option. It loses because it does not repair the consumer, it discards useful cached data, and an empty cache can send a request stampede against an already-strained database.
-
-### Report validation
-
-Faultline does not trust its own generated report simply because the pipeline produced it. Before returning an answer, Python checks again:
-
-- evidence references;
-- cause scores;
-- repair calculations;
-- ranking order;
-- safety flags.
-
-If the structured result disagrees with the fixed rules, the report is rejected. This gate lives in `ReportValidator` (`src/faultline/validation.py`).
-
-### Model setup: three-tier live cascade + deterministic offline mode
-
-Faultline uses a resilient, three-tier live provider cascade with bounded retries and exponential backoff, plus an explicit deterministic offline mode:
-
-- **Live Tier 1 (Primary)**: `gemini-3.7-flash` (or `GEMINI_MODEL`) via Google GenAI SDK.
-- **Live Tier 2 (Gemini Fallback)**: `gemini-3.6-flash` (or `GEMINI_FALLBACK_MODEL`) if the primary model encounters rate limits (429), capacity issues (503), or transient network timeouts.
-- **Live Tier 3 (OpenRouter Fallback)**: `google/gemini-2.0-flash-001` (or `OPENROUTER_FALLBACK_MODEL`) via OpenRouter's OpenAI-compatible API (`OPENROUTER_API_KEY`) if Google Gemini endpoints are unreachable or quota-exhausted.
-- **Deterministic Offline Mode**: Built-in deterministic reasoning provider (`FakeGeminiProvider`) for hermetic CI builds, local development, and zero-credential assessment when API keys are omitted.
-
-**Session stickiness:** When a live fallback tier succeeds, subsequent diagnostic and narrative calls in that investigation session stay on the working provider to eliminate retry latency.
-
-**Strict error sanitization:** Secrets, API keys, and authorization headers are never logged or returned in error payloads. Non-transient client errors (such as 400 Bad Request or 401 Unauthorized) fail fast without triggering invalid fallbacks.
-
-### Testing
-
-```bash
-uv run pytest -v
-uv run ruff check src/ tests/
-uv run mypy src/ tests/
-cd frontend && npm run verify
-docker build -t faultline .
-```
-
-GitHub Actions runs the verification suite automatically on pushes to `main`.
+Impact is weighted highest (60%) to ensure solutions address the root cause, while safety (20%) and speed (15%) ensure operational risk and time-to-relief are balanced.
 
 ---
 
-## Safety
+### Independent Recomputation in `ReportValidator`
 
-Faultline's most important safety rule is simple:
+Faultline does not assume generated reports are correct. Before an investigation result is returned, [`ReportValidator`](file:///c:/Users/Babar/Documents/Coding/Projects/LEC_AI/src/faultline/validation.py) independently reconstructs the authoritative state:
 
-> **It never executes repairs.**
->
-> `execution_status = "not_executed"` · `operator_approval_required = True`
+1. **Ledger Reconstruction**: Re-instantiates `EvidenceLedger` from the report, verifying sequential ID continuity and deduplication integrity.
+2. **Conflict Recomputation**: Re-evaluates all cross-source scope tensions from scratch.
+3. **Hypothesis Scoring**: Re-scores all six root causes in the catalogue using policy rules and source-group caps.
+4. **Strategy Ranking**: Recomputes all multi-dimensional scores and unrounded tie-breakers.
+5. **Grounding Verification**: Ensures cited evidence IDs, conflict IDs, and component entities match authoritative records.
+6. **Execution Boundary**: Confirms `execution_status == "not_executed"` and `operator_approval_required == True`.
 
-Suggested commands (like `kubectl rollout restart ...`) are display-only illustrations. There is no code in Faultline that runs shell commands, calls subprocess, or executes repairs. A human operator must review the recommendation and act on it independently.
-
----
-
-## What you can see in the dashboard
-
-Faultline includes a React web dashboard that shows:
-
-- **Active Incident Controller** — Trigger newly synthesized incidents with randomized diagnostics on demand or choose from baseline scenarios;
-- **Initial Incident Alert** — Severity, incident timestamp, and affected services overview;
-- **Step-by-Step Investigation Timeline** — Interactive replay controls (Play, Pause, Step Forward, Speed 0.5x–2x);
-- **Diagnostic Clues & Scope Tensions** — Juxtaposed direct synthetic health probes vs production user telemetry;
-- **All Recorded Evidence** — Complete immutable ledger with source group limits, freshness, and directness scores;
-- **Scored Root-Cause Hypotheses** — Policy-weighted decision weights, causal chains, and mathematical breakdowns;
-- **4-Dimensional Strategy Comparison** — Impact (60%), Safety (20%), Speed (15%), Affordability (5%) trade-off matrix;
-- **Executive Defense Brief** — Plain-English explanation defending the recommendation and reconciling contradictions;
-- **Safety Command Console** — Illustrative operator repair commands with strict approval safety boundaries.
+If the report's scores, rankings, or safety flags deviate from authoritative recomputation, the entire report is rejected.
 
 ---
 
-## Try it yourself
+## HTTP API Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/health` | `GET` | Service health, version, and model provider configuration status |
+| `/api/scenarios` | `GET` | Lists available canonical and dynamically synthesized incident scenarios |
+| `/api/incidents/generate` | `POST` | Procedurally synthesizes a dynamic incident across 6 supported archetypes |
+| `/api/analyze` | `POST` | Synchronous multi-round investigation returning validated `AnalysisResult` |
+
+---
+
+## Procedural Incident Synthesis
+
+Faultline includes a built-in **Procedural Incident Synthesis Engine** ([`src/faultline/generator.py`](file:///c:/Users/Babar/Documents/Coding/Projects/LEC_AI/src/faultline/generator.py)) that synthesizes realistic incidents on demand with randomized metric variance, scope tensions, and background noise across six operational failure archetypes:
+
+1. **`CACHE_INVALIDATION_CONSUMER_STALLED`** — Worker crash, queue backlog accumulation, stale cache hits, and database pool saturation. Expected Winner: `RECOVER_CONSUMER_AND_DRAIN`.
+2. **`DATABASE_INDEX_REGRESSION`** — Dropped index via DDL migration, full table scan surge, healthy point synthetic pings vs degraded workload queries. Expected Winner: `REBUILD_DATABASE_INDEX`.
+3. **`FLASH_SALE_SURGE`** — Ingress API Gateway saturation, rate-limiting engagement, downstream connection queuing. Expected Winner: `THROTTLE_TRAFFIC`.
+4. **`CACHE_CLUSTER_OUTAGE`** — Redis node termination, sentinel failover, 100% cache stampede onto PostgreSQL. Expected Winner: `RESTART_CACHE`.
+5. **`REPLICA_REPLICATION_LAG`** — Primary write burst, replica sync delay, read freshness degradation. Expected Winner: `THROTTLE_TRAFFIC`.
+6. **`DATABASE_CAPACITY_DEGRADATION`** — Exclusive lock contention, transaction wait timeouts, connection pool exhaustion. Expected Winner: `THROTTLE_TRAFFIC`.
+
+> **Deterministic Test Oracle:** The generator's expected winner metadata is used as an external test oracle for regression assertions across seeds (`42`, `101`, `777`). It is never passed into the orchestrator or scoring engine during investigation.
+
+---
+
+## Model Provider Architecture
+
+- **Live Tier 1 (Primary)**: `gemini-3.7-flash` via Google GenAI SDK.
+- **Live Tier 2 (Gemini Fallback)**: `gemini-3.6-flash` for rate limits (429), capacity errors (503), or timeouts.
+- **Live Tier 3 (OpenRouter Fallback)**: `google/gemini-2.0-flash-001` via OpenRouter if Google endpoints are unavailable.
+- **Deterministic Offline Mode**: Built-in `FakeGeminiProvider` for hermetic testing and credential-free evaluation.
+- **Error Sanitization**: Provider errors returned through the API and recorded in fallback metadata are sanitized to avoid exposing credentials or authorization data.
+
+---
+
+## Try It Yourself
 
 ### Prerequisites
 
 - Python 3.11+ (with [`uv`](https://docs.astral.sh/uv/) package manager)
 - Node.js 20+ (for the frontend dashboard)
-- *(Optional)* API key for live AI reasoning (`GEMINI_API_KEY` for Google Gemini or `OPENROUTER_API_KEY` for OpenRouter) — runs fully deterministic in offline mode without any keys
+- *(Optional)* `GEMINI_API_KEY` or `OPENROUTER_API_KEY` for live AI reasoning
 
-### Local setup
+### Local Setup
 
 ```bash
 # Clone the repository
 git clone https://github.com/AnasBabari/LEC_AI.git
 cd LEC_AI
 
-# Install locked Python dependencies
+# Install locked dependencies
 uv sync --frozen --all-extras
 
-# (Optional) Export live API keys
-export GEMINI_API_KEY="your-gemini-key"          # Primary (3.7) & Secondary (3.6)
-export OPENROUTER_API_KEY="your-openrouter-key"  # Tertiary fallback
+# (Optional) Set API keys for live AI
+export GEMINI_API_KEY="your-gemini-key"
+export OPENROUTER_API_KEY="your-openrouter-key"
 
-# Run an offline analysis from the command line
+# Run offline CLI analysis
 uv run faultline analyze --offline --scenario cache_invalidation_lag
 
-# Start the backend API server
+# Start the FastAPI server (serves API and compiled frontend)
 uv run uvicorn faultline.app:app --host 0.0.0.0 --port 8000
 
-# In a separate terminal, start the React frontend
+# (Development) Run frontend dev server
 cd frontend && npm ci && npm run dev
 # Open http://localhost:5173
 ```
@@ -406,58 +317,43 @@ cd frontend && npm ci && npm run dev
 
 ```bash
 docker build -t faultline .
-docker run -p 8000:8000 \
-  -e GEMINI_API_KEY="your-gemini-key-optional" \
-  -e OPENROUTER_API_KEY="your-openrouter-key-optional" \
-  faultline
+docker run -p 8000:8000 faultline
 # Open http://localhost:8000
+```
+
+### Automated Verification
+
+```bash
+# Backend test suite (98 passed, 2 opt-in live tests skipped)
+uv run pytest -v
+
+# Static analysis and typing
+uv run ruff check src/ tests/
+uv run mypy src/ tests/
+
+# Frontend verify and build
+cd frontend && npm run verify && npm run build
 ```
 
 ---
 
-## Limits of this demo
+## Limits of this Prototype
 
-Faultline is a working decision-support prototype, not a production control plane.
-
-- Diagnostic sources are deterministic scenario simulators and procedural synthesis generators, not live Prometheus, database, cache, or queue integrations.
-- Repair commands are illustrative strings. They are never executed.
-- Evidence and strategy weights are explicit policy choices, not learned probabilities or guarantees of recovery.
-- AI models are optional. A multi-tier fallback cascade (Gemini Primary -> Gemini Secondary -> OpenRouter Tertiary) handles transient live issues, while offline mode makes the full workflow reproducible for assessment and CI without credentials.
-- Structured claims are checked, but a human operator must still review the written explanation and approve any real-world action.
-
-These boundaries are deliberate: the assessment focuses on reasoning through conflicting diagnostics and defending a repair ranking.
+- Diagnostic sources are deterministic scenario fixtures and procedural generators, not live Prometheus or database connections.
+- Remediation commands are illustrative strings and are never executed by the system.
+- Scoring formulas and strategy weights are explicit policy definitions, not machine-learned probabilities.
+- Structured assertions are validated by independent recomputation, but a human operator must review the written narrative and approve any real-world infrastructure change.
 
 ---
 
-## Dynamic Incident Generation & Scenarios
+## AI Assistance Disclosure
 
-Faultline features a built-in **Procedural Incident Synthesis Engine** (`IncidentSynthesisEngine`) that creates fresh, unpredictable failure incidents on demand with randomized metric jitter, realistic scope tensions, and background noise.
-
-The engine synthesizes incidents across six core operational failure archetypes:
-
-- **`CACHE_INVALIDATION_CONSUMER_STALLED`** — A stalled invalidation queue consumer causes stale cache entries and cascading database query overload. Winner: `RECOVER_CONSUMER_AND_DRAIN`.
-- **`DATABASE_INDEX_REGRESSION`** — A release accidentally drops a database index. Direct health probes pass, but user workload queries degrade severely. Winner: `REBUILD_DATABASE_INDEX`.
-- **`FLASH_SALE_SURGE`** — Extreme promotional traffic overwhelms backend worker pools and ingress gateways. Winner: `THROTTLE_TRAFFIC`.
-- **`CACHE_CLUSTER_OUTAGE`** — A primary Redis node crashes and fails over, causing transient cache misses and connection pool saturation. Winner: `RESTART_CACHE`.
-- **`REPLICA_REPLICATION_LAG`** — High write volumes cause read replica synchronization lag, surfacing stale data reads. Winner: `THROTTLE_TRAFFIC`.
-- **`DATABASE_CAPACITY_DEGRADATION`** — Unoptimized long-running transactions exhaust connection pools and locks. Winner: `THROTTLE_TRAFFIC`.
-
-### What I would build next
-
-- Direct Prometheus / OpenTelemetry OTLP real-time telemetry stream ingestion.
-- Automated post-mortem exporter to Markdown or GitHub Issues.
-- Real-time Slack & PagerDuty incident notification webhooks with operator approval callbacks.
-
----
-
-## AI assistance disclosure
-
-AI tools, including Gemini 3.7 Flash High via Antigravity, assisted with planning, implementation, code review, debugging, testing, and iteration. I reviewed and tested the shipped architecture, deterministic scoring policy, evidence-validation boundaries, and safety constraints, and can explain and defend the resulting implementation and its trade-offs.
+AI tools, including Gemini 3.7 Flash via Antigravity, assisted with planning, implementation, code review, debugging, testing, and iteration. All shipped architecture, deterministic scoring policies, evidence-validation boundaries, and safety constraints were reviewed and verified, and can be defended in detail.
 
 ---
 
 ## Links
 
 - **Repository:** [github.com/AnasBabari/LEC_AI](https://github.com/AnasBabari/LEC_AI)
-- **Dashboard:** `http://localhost:5173` (local) or `http://localhost:8000` (Docker)
-- **Reference output:** [`examples/canonical-report.offline.json`](examples/canonical-report.offline.json)
+- **Dashboard:** `http://localhost:5173` (local dev) or `http://localhost:8000` (Docker / static)
+- **Reference Output:** [`examples/canonical-report.offline.json`](examples/canonical-report.offline.json)

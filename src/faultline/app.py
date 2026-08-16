@@ -220,7 +220,7 @@ def analyze_incident(req: AnalyzeRequest) -> AnalysisResult:
         ) from ve
     except Exception as e:
         error_id = f"ERR-{uuid.uuid4().hex[:8].upper()}"
-        logger.exception(f"Unexpected error [{error_id}] during analysis of '{req.scenario_id}': {e}")
+        logger.exception(f"Unexpected error [{error_id}] during analysis of '{req.scenario_id}': {sanitize_error_message(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal incident analysis failure. Incident reference ID: {error_id}",

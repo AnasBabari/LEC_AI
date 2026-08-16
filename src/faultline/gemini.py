@@ -332,6 +332,32 @@ class FakeGeminiProvider:
             summary="Sufficient multi-source evidence collected across all independent diagnostic domains.",
         )
 
+    @staticmethod
+    def _find_obs(
+        ledger: list[EvidenceObservation],
+        signal: str,
+        component: Optional[str] = None,
+        scope: Optional[str] = None,
+    ) -> Optional[EvidenceObservation]:
+        for obs in ledger:
+            if component and obs.component.value != component:
+                continue
+            if scope and obs.scope != scope:
+                continue
+            if obs.signal == signal or signal in obs.signal:
+                return obs
+        return None
+
+    @staticmethod
+    def _fmt_obs(obs: Optional[EvidenceObservation], default_val: str) -> str:
+        if obs is None:
+            return default_val
+        val = obs.value
+        unit = obs.unit
+        if val.is_integer():
+            return f"{int(val):,}{unit}"
+        return f"{val:.1f}{unit}"
+
     def synthesise_hypotheses(
         self,
         incident: FaultReport,
@@ -426,6 +452,8 @@ class FakeGeminiProvider:
 
         # Scenario: Index regression
         if index_reg_ids:
+            db_query_lat = self._fmt_obs(self._find_obs(evidence_ledger, "query_latency", "database"), "1850ms")
+            db_synth = self._fmt_obs(self._find_obs(evidence_ledger, "response_time", "database", scope="synthetic_probe") or self._find_obs(evidence_ledger, "synthetic", "database"), "1.5ms")
             hypotheses.append(
                 HypothesisDraft(
                     cause_code=RootCauseCode.DATABASE_INDEX_REGRESSION,
@@ -433,25 +461,26 @@ class FakeGeminiProvider:
                     causal_chain=[
                         "Schema migration dropped composite index on 'orders' table",
                         "Sequential full table scans triggered on all order search queries",
-                        "Application workload latency rose to 1850ms while synthetic health probe responds in 1.5ms",
+                        f"Application workload query latency rose to {db_query_lat} while synthetic health probe responds in {db_synth}",
                     ],
                     supporting_evidence_ids=index_reg_ids,
                     opposing_evidence_ids=[],
                     unresolved_uncertainties=[
-                        "Direct synthetic ping executes primary key lookup in 1.5ms, confirming engine is healthy but queries lacking index are degraded.",
+                        f"Direct synthetic ping executes primary key lookup in {db_synth}, confirming engine is healthy but queries lacking index are degraded.",
                     ],
                 )
             )
 
         # Scenario: Cache cluster outage
         if cache_node_support_ids:
+            cache_avail = self._fmt_obs(self._find_obs(evidence_ledger, "availability", "cache"), "0%")
             hypotheses.append(
                 HypothesisDraft(
                     cause_code=RootCauseCode.CACHE_NODE_FAILURE,
-                    summary="Cache cluster nodes crashed or failed health checks, driving cache availability to 0% and causing query cascades.",
+                    summary=f"Cache cluster nodes crashed or failed health checks, driving cache availability to {cache_avail} and causing query cascades.",
                     causal_chain=[
                         "Redis cache node process terminated unexpectedly (OOM code 137)",
-                        "Cache availability dropped to 0% with TCP connection failures",
+                        f"Cache availability dropped to {cache_avail} with TCP connection failures",
                         "All production queries bypassed cache and hit database directly",
                     ],
                     supporting_evidence_ids=cache_node_support_ids,
@@ -464,13 +493,14 @@ class FakeGeminiProvider:
 
         # Scenario: Read replica lag
         if replica_support_ids:
+            rep_lag = self._fmt_obs(self._find_obs(evidence_ledger, "replica_lag", "database"), "180 seconds")
             hypotheses.append(
                 HypothesisDraft(
                     cause_code=RootCauseCode.REPLICA_LAG,
                     summary="Database read replica replication stream is lagging significantly behind primary database.",
                     causal_chain=[
                         "Large batch data ingestion triggered on database primary",
-                        "Replication stream fell behind by over 180 seconds",
+                        f"Replication stream fell behind by over {rep_lag}",
                         "Read queries against replica returned stale customer records",
                     ],
                     supporting_evidence_ids=replica_support_ids,
@@ -483,21 +513,23 @@ class FakeGeminiProvider:
 
         # Canonical Scenario: Cache invalidation consumer stall
         if queue_support_ids:
+            q_depth = self._fmt_obs(self._find_obs(evidence_ledger, "queue_depth", "message_queue") or self._find_obs(evidence_ledger, "unconsumed", "message_queue"), "42,000")
+            db_pool = self._fmt_obs(self._find_obs(evidence_ledger, "pool_saturation", "database"), "92%")
             hypotheses.append(
                 HypothesisDraft(
                     cause_code=RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
-                    summary="Cache invalidation queue consumer stalled, creating a massive event backlog, stale cache reads, and cascading DB query saturation.",
+                    summary=f"Cache invalidation queue consumer stalled, creating a {q_depth} item event backlog, stale cache reads, and cascading DB query saturation.",
                     causal_chain=[
                         "Invalidation queue consumer worker crashed (OOM killer exit code 137)",
-                        "Cache invalidation messages accumulated to >42,000 unconsumed items",
+                        f"Cache invalidation messages accumulated to >{q_depth} unconsumed items",
                         "Cache entries remained stale, causing application cache-miss cascade",
-                        "Database connection pool became saturated (92%) handling direct cache misses",
+                        f"Database connection pool became saturated ({db_pool}) handling direct cache misses",
                     ],
                     supporting_evidence_ids=queue_support_ids,
                     opposing_evidence_ids=[],
                     unresolved_uncertainties=[
                         "Exact root cause of the initial consumer worker OOM crash remains uninspected.",
-                        "Time required to drain the 42,000 message backlog under current traffic.",
+                        f"Time required to drain the {q_depth} message backlog under current traffic.",
                     ],
                 )
             )
@@ -520,6 +552,7 @@ class FakeGeminiProvider:
             )
 
         if db_cap_support_ids:
+            db_synth = self._fmt_obs(self._find_obs(evidence_ledger, "response_time", "database", scope="synthetic_probe") or self._find_obs(evidence_ledger, "synthetic", "database"), "<2ms")
             hypotheses.append(
                 HypothesisDraft(
                     cause_code=RootCauseCode.DATABASE_CAPACITY_DEGRADATION,
@@ -531,7 +564,7 @@ class FakeGeminiProvider:
                     supporting_evidence_ids=db_cap_support_ids,
                     opposing_evidence_ids=db_cap_oppose_ids,
                     unresolved_uncertainties=[
-                        "Direct synthetic probe responds in <2ms with healthy CPU, indicating DB engine is not fundamentally degraded." if db_cap_oppose_ids else "Primary database compute resource exhaustion.",
+                        f"Direct synthetic probe responds in {db_synth} with healthy CPU, indicating DB engine is not fundamentally degraded." if db_cap_oppose_ids else "Primary database compute resource exhaustion.",
                     ],
                 )
             )
@@ -550,7 +583,7 @@ class FakeGeminiProvider:
                     supporting_evidence_ids=[],
                     opposing_evidence_ids=db_cap_oppose_ids,
                     unresolved_uncertainties=[
-                        "Direct synthetic ping executes in <2ms, opposing database capacity degradation.",
+                        "Direct synthetic ping executes normally, opposing database capacity degradation.",
                     ],
                 )
             )
@@ -602,10 +635,12 @@ class FakeGeminiProvider:
         top_hyp_name = top_hyp.name if top_hyp else "Primary Cause"
 
         if top_hyp and top_hyp.cause_code == RootCauseCode.DATABASE_INDEX_REGRESSION:
+            db_query_lat = self._fmt_obs(self._find_obs(evidence_ledger, "query_latency", "database") or self._find_obs(evidence_ledger, "latency", "database"), "1850ms")
+            db_synth = self._fmt_obs(self._find_obs(evidence_ledger, "response_time", "database", scope="synthetic_probe") or self._find_obs(evidence_ledger, "synthetic", "database"), "1.5ms")
             contradiction_text = (
-                "Workload telemetry indicated high database query latency on search endpoints (1850ms) and elevated table scan rates, "
-                "while direct synthetic probes showed the database engine responding in 1.5ms. This scope tension is explained by "
-                "the dropped composite index in migration #4082: the database hardware is healthy, but queries filtering on unindexed columns "
+                f"Workload telemetry indicated high database query latency on search endpoints ({db_query_lat}) and elevated table scan rates, "
+                f"while direct synthetic probes showed the database engine responding in {db_synth}. This scope tension is explained by "
+                "the dropped composite index: the database hardware is healthy, but queries filtering on unindexed columns "
                 "must perform expensive full table scans."
             )
             rejection_text = (
@@ -613,8 +648,10 @@ class FakeGeminiProvider:
                 "but does not resolve the missing database index. Rebuilding the index concurrently cures the root cause with zero data loss."
             )
         elif top_hyp and top_hyp.cause_code == RootCauseCode.TRAFFIC_SURGE:
+            gw_lat = self._fmt_obs(self._find_obs(evidence_ledger, "latency", "api_gateway"), "3100ms")
+            gw_tps = self._fmt_obs(self._find_obs(evidence_ledger, "throughput", "api_gateway"), "12,500 req/sec")
             contradiction_text = (
-                "Workload telemetry captured elevated API Gateway p99 latency (3100ms) and high throughput (12,500 req/sec), "
+                f"Workload telemetry captured elevated API Gateway p99 latency ({gw_lat}) and high throughput ({gw_tps}), "
                 "while synthetic health probes and backend database metrics showed fast response times (<2ms). This scope tension "
                 "demonstrates that backend databases and caches are healthy, but ingress traffic volume exceeds gateway capacity."
             )
@@ -623,9 +660,12 @@ class FakeGeminiProvider:
                 "Applying gateway rate limiting and load shedding immediately protects backend services from cascading failure."
             )
         elif top_hyp and top_hyp.cause_code == RootCauseCode.CACHE_NODE_FAILURE:
+            db_pool = self._fmt_obs(self._find_obs(evidence_ledger, "pool_saturation", "database"), "88%")
+            db_synth = self._fmt_obs(self._find_obs(evidence_ledger, "response_time", "database", scope="synthetic_probe"), "1.9ms")
+            cache_avail = self._fmt_obs(self._find_obs(evidence_ledger, "availability", "cache"), "0%")
             contradiction_text = (
-                "Workload metrics showed high database connection pool saturation (88%), while direct synthetic query probes "
-                "confirmed the database engine is healthy (1.9ms). This scope tension is explained by 0% cache cluster availability: "
+                f"Workload metrics showed high database connection pool saturation ({db_pool}), while direct synthetic query probes "
+                f"confirmed the database engine is healthy ({db_synth}). This scope tension is explained by {cache_avail} cache cluster availability: "
                 "the database is forced to handle 100% unbuffered raw query traffic because the cache nodes crashed."
             )
             rejection_text = (
@@ -633,9 +673,11 @@ class FakeGeminiProvider:
                 "and permanently relieves downstream database pressure."
             )
         elif top_hyp and top_hyp.cause_code == RootCauseCode.REPLICA_LAG:
+            rep_lag = self._fmt_obs(self._find_obs(evidence_ledger, "replica_lag", "database"), "185s")
+            db_synth = self._fmt_obs(self._find_obs(evidence_ledger, "response_time", "database", scope="synthetic_probe"), "1.6ms")
             contradiction_text = (
-                "Workload telemetry indicated stale read data and elevated query latency on read endpoints, while direct synthetic probes "
-                "on the primary database showed healthy response times (1.6ms). This scope tension is explained by 185-second replication lag "
+                f"Workload telemetry indicated stale read data and elevated query latency on read endpoints, while direct synthetic probes "
+                f"on the primary database showed healthy response times ({db_synth}). This scope tension is explained by {rep_lag} replication lag "
                 "on read replicas during heavy batch ingestion."
             )
             rejection_text = (
@@ -643,18 +685,23 @@ class FakeGeminiProvider:
                 "allows the replication stream to catch up safely."
             )
         elif top_hyp and top_hyp.cause_code == RootCauseCode.DATABASE_CAPACITY_DEGRADATION:
+            db_pool = self._fmt_obs(self._find_obs(evidence_ledger, "pool_saturation", "database"), "99.4%")
             contradiction_text = (
-                "Workload telemetry showed 99.4% database connection pool saturation and elevated API Gateway p99 latency, "
+                f"Workload telemetry showed {db_pool} database connection pool saturation and elevated API Gateway p99 latency, "
                 "while synthetic gateway health probes responded normally. This scope tension confirms the primary database compute capacity is completely exhausted."
             )
             rejection_text = (
                 f"{top_alternative.name} cannot recover an exhausted primary instance. Failing over to a standby replica restores capacity."
             )
         else:
+            db_pool = self._fmt_obs(self._find_obs(evidence_ledger, "pool_saturation", "database"), "92%")
+            db_synth = self._fmt_obs(self._find_obs(evidence_ledger, "response_time", "database", scope="synthetic_probe"), "1.8ms")
+            q_depth = self._fmt_obs(self._find_obs(evidence_ledger, "queue_depth", "message_queue") or self._find_obs(evidence_ledger, "unconsumed", "message_queue"), "42,000-message")
+            miss_rate = self._fmt_obs(self._find_obs(evidence_ledger, "cache_miss_rate", "cache") or self._find_obs(evidence_ledger, "miss_rate", "cache"), "65.8% misses")
             contradiction_text = (
-                "Workload telemetry indicated high database latency and connection pool saturation (92%), while direct synthetic "
-                "probes showed the database responding in 1.8ms with healthy CPU. This scope tension is explained by the 42,000-message "
-                "invalidation queue backlog: stale cache keys forced high miss rates (65.8% misses) directly to the database. "
+                f"Workload telemetry indicated high database latency and connection pool saturation ({db_pool}), while direct synthetic "
+                f"probes showed the database responding in {db_synth} with healthy CPU. This scope tension is explained by the {q_depth} "
+                f"invalidation queue backlog: stale cache keys forced high miss rates ({miss_rate}) directly to the database. "
                 "The database is functioning normally but overwhelmed by upstream invalidation failure."
             )
             rejection_text = (
@@ -784,7 +831,7 @@ class GeminiProvider:
                     if name:
                         available_model_names.append(name.replace("models/", ""))
             except Exception as probe_err:
-                logger.warning(f"Could not list Gemini models on startup: {probe_err}")
+                logger.warning(f"Could not list Gemini models on startup: {sanitize_error_category(probe_err)}")
 
             if self.configured_primary in available_model_names:
                 self.primary_model = self.configured_primary
@@ -812,7 +859,7 @@ class GeminiProvider:
             logger.warning("google-genai package not installed; checking for OpenRouter or offline mode.")
             self.model_resolution_status = "openrouter_standby" if self.openrouter_api_key else "offline"
         except Exception as e:
-            logger.error(f"Error initializing Gemini client: {e}")
+            logger.error(f"Error initializing Gemini client: {sanitize_error_category(e)}")
             self.model_resolution_status = "unavailable"
 
     def _build_generation_config(self, response_schema: Type[T]) -> Any:
