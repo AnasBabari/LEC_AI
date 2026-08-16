@@ -231,7 +231,7 @@ Impact is weighted highest (60%) to ensure solutions address the root cause, whi
 
 ### Independent Recomputation in `ReportValidator`
 
-Faultline does not assume generated reports are correct. Before an investigation result is returned, [`ReportValidator`](file:///c:/Users/Babar/Documents/Coding/Projects/LEC_AI/src/faultline/validation.py) independently reconstructs the authoritative state:
+Faultline does not assume generated reports are correct. Before an investigation result is returned, [`ReportValidator`](src/faultline/validation.py) independently reconstructs the authoritative state:
 
 1. **Ledger Reconstruction**: Re-instantiates `EvidenceLedger` from the report, verifying sequential ID continuity and deduplication integrity.
 2. **Conflict Recomputation**: Re-evaluates all cross-source scope tensions from scratch.
@@ -257,7 +257,7 @@ If the report's scores, rankings, or safety flags deviate from authoritative rec
 
 ## Procedural Incident Synthesis
 
-Faultline includes a built-in **Procedural Incident Synthesis Engine** ([`src/faultline/generator.py`](file:///c:/Users/Babar/Documents/Coding/Projects/LEC_AI/src/faultline/generator.py)) that synthesizes realistic incidents on demand with randomized metric variance, scope tensions, and background noise across six operational failure archetypes:
+Faultline includes a built-in **Procedural Incident Synthesis Engine** ([`src/faultline/generator.py`](src/faultline/generator.py)) that synthesizes realistic incidents on demand with randomized metric variance, scope tensions, and background noise across six operational failure archetypes:
 
 1. **`CACHE_INVALIDATION_CONSUMER_STALLED`** — Worker crash, queue backlog accumulation, stale cache hits, and database pool saturation. Expected Winner: `RECOVER_CONSUMER_AND_DRAIN`.
 2. **`DATABASE_INDEX_REGRESSION`** — Dropped index via DDL migration, full table scan surge, healthy point synthetic pings vs degraded workload queries. Expected Winner: `REBUILD_DATABASE_INDEX`.
@@ -324,7 +324,7 @@ docker run -p 8000:8000 faultline
 ### Automated Verification
 
 ```bash
-# Backend test suite (98 passed, 2 opt-in live tests skipped)
+# Backend test suite (104 passed, 2 opt-in live-provider tests skipped)
 uv run pytest -v
 
 # Static analysis and typing
@@ -343,6 +343,17 @@ cd frontend && npm run verify && npm run build
 - Remediation commands are illustrative strings and are never executed by the system.
 - Scoring formulas and strategy weights are explicit policy definitions, not machine-learned probabilities.
 - Structured assertions are validated by independent recomputation, but a human operator must review the written narrative and approve any real-world infrastructure change.
+
+---
+
+## What I would do next
+
+With more time, I would focus on validating Faultline outside its simulated environment:
+
+- **Live observability integrations** — replace the simulated diagnostic adapters with Prometheus/OpenTelemetry telemetry, Kubernetes events, database health probes, and queue metrics.
+- **Held-out incident evaluation** — evaluate Faultline against incidents that were not generated from the same policy catalogue, including incomplete and previously unseen failure modes.
+- **Policy calibration** — tune impact, safety, speed, and cost weights using historical incidents and operator feedback rather than hand-authored defaults.
+- **Asynchronous investigations** — move longer investigations from the synchronous API request into a persisted background-job model with progress updates and resumable reports.
 
 ---
 
