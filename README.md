@@ -90,40 +90,40 @@ How the **Web Dashboard**, **Decision Engine**, **AI Assistants**, and **Monitor
 ```mermaid
 flowchart TB
     subgraph UI["🖥️ Web Dashboard (React)"]
-        Dash["<b>Live Observability Dashboard</b><br/><small><i>e.g. Investigation Timeline · Clue Inspector · Fix Comparison · Safety Locks</i></small>"]
+        Dash["Observability Dashboard<br/><i>Timeline, Clue Inspector, Repair Matrix & Safety Gate</i>"]
     end
 
     subgraph Backend["⚙️ Faultline Decision Engine (Python)"]
-        Orchestrator["<b>Investigation Coordinator</b>"]
-        Ledger["<b>Recorded Evidence Ledger</b>"]
-        Engine["<b>Scoring Rules & Conflict Detector</b>"]
-        Validator["<b>Safety & Verification Gate</b>"]
+        Orchestrator["Investigation Coordinator"]
+        Ledger["Recorded Evidence Ledger"]
+        Engine["Scoring Rules & Conflict Detector"]
+        Validator["Safety & Verification Gate"]
         Orchestrator --> Ledger --> Engine --> Validator
     end
 
     subgraph AI["🧠 AI Assistants (Google Gemini / OpenRouter)"]
         subgraph LiveMode["Live AI Models"]
-            Primary["<b>Primary AI:</b> Gemini 3.7"]
-            Backup["<b>Backup AI:</b> Gemini 3.6"]
-            Tertiary["<b>Third-Tier:</b> OpenRouter"]
+            Primary["Primary: Gemini 3.7"]
+            Backup["Backup: Gemini 3.6"]
+            Tertiary["Third-Tier: OpenRouter"]
             Primary -. If Busy .-> Backup -. If Offline .-> Tertiary
         end
         subgraph OfflineMode["Offline Mode"]
-            Offline["<b>Built-in Simulator</b><br/><small><i>(No API Keys Required)</i></small>"]
+            Offline["Built-in Simulator<br/><i>(Zero API Keys)</i>"]
         end
     end
 
     subgraph Target["🏢 Simulated Web Application (E-Commerce)"]
-        GW["<b>API Gateway</b><br/><small><i>e.g. Response Time: 2.4s</i></small>"]
-        Cache["<b>Redis Cache</b><br/><small><i>e.g. Stale Content · 34% Hit Rate</i></small>"]
-        MQ["<b>Message Queue</b><br/><small><i>e.g. 42k Backlog · Consumer Down</i></small>"]
-        DB["<b>PostgreSQL Database</b><br/><small><i>e.g. 92% Load · 1.8ms Probe</i></small>"]
+        GW["API Gateway<br/><i>e.g. 2.4s response</i>"]
+        Cache["Redis Cache<br/><i>e.g. 34% hit rate</i>"]
+        MQ["Message Queue<br/><i>e.g. 42k backlog</i>"]
+        DB["PostgreSQL DB<br/><i>e.g. 92% load</i>"]
     end
 
     User["👤 Human Engineer"] <-->|Reviews & Approves| UI
     UI <-->|Web Requests| Orchestrator
     Orchestrator <-->|Reasoning Prompts| Primary
-    Orchestrator -->|Checks Diagnostics<br/><small><i>e.g. Traffic · Health Tests · Logs</i></small>| Target
+    Orchestrator -->|Checks Diagnostics<br/><i>Traffic · Probes · Logs</i>| Target
 ```
 
 > **Key takeaway:** AI assistants suggest diagnostic queries and draft plain-English explanations; Python computes all scores, verifies evidence, and enforces strict safety rules.
@@ -137,29 +137,29 @@ The 6 core stages of an automated investigation:
 ```mermaid
 flowchart TD
     subgraph S1["1. Incident Alert"]
-        Alert["<b>🚨 Outage Detected</b><br/><small><i>e.g. Customers report slow pages<br/>and checkout database timeouts</i></small>"]
+        Alert["🚨 Outage Detected<br/><i>e.g. High latency alerts & database timeouts</i>"]
     end
 
     subgraph S2["2. Collect Clues"]
-        Telemetry["<b>📊 Customer Traffic</b><br/><small><i>e.g. Real page load times<br/>& live traffic levels</i></small>"]
-        Probes["<b>🩺 Direct Health Tests</b><br/><small><i>e.g. Direct pings to cache<br/>& database query checks</i></small>"]
-        Logs["<b>📜 Background Logs</b><br/><small><i>e.g. Worker heartbeats<br/>& queue backlog size</i></small>"]
+        Telemetry["📊 Traffic Telemetry<br/><i>e.g. Slow customer requests<br/>and degraded API latency</i>"]
+        Probes["🩺 Direct Health Tests<br/><i>e.g. Point-in-time ping tests<br/>to database & cache</i>"]
+        Logs["📜 Background Logs<br/><i>e.g. Worker process status<br/>and queue message depth</i>"]
     end
 
     subgraph S3["3. Spot Contradictions"]
-        Tension["<b>⚖️ Reconcile Conflicting Clues</b><br/><small><i>e.g. Understand why direct health test is 1.8ms (OK)<br/>while real customer queries stall under 92% pool load</i></small>"]
+        Tension["⚖️ Reconcile Conflicting Clues<br/><i>e.g. Why direct test is 1.8ms (OK) while customer queries stall (92% load)</i>"]
     end
 
     subgraph S4["4. Find the Root Cause"]
-        Causes["<b>🔍 Score Suspected Causes</b><br/><small><i>e.g. Weigh clue trustworthiness, freshness,<br/>and direct connection to the issue</i></small>"]
+        Causes["🔍 Score Suspected Causes<br/><i>Weigh clue reliability, freshness, and direct causal connection</i>"]
     end
 
     subgraph S5["5. Compare Solutions"]
-        Repairs["<b>🎯 Weigh Competing Fixes</b><br/><small><i>e.g. Rank repairs by balancing relief speed,<br/>long-term safety, and system risk</i></small>"]
+        Repairs["🎯 Weigh Competing Fixes<br/><i>Balance relief speed, long-term safety, and system risk</i>"]
     end
 
     subgraph S6["6. Safety Check & Human Decision"]
-        Approval["<b>🛡️ Verify Safety Rules → Human Sign-Off</b><br/><small><i>e.g. Python verifies all rules & safety limits;<br/>human engineer reviews evidence and makes final call</i></small>"]
+        Approval["🛡️ Safety Rules & Human Sign-Off<br/><i>Code verifies all rules; engineer makes the final decision</i>"]
     end
 
     Alert --> Telemetry
@@ -185,17 +185,17 @@ How AI exploration and fixed safety rules interact:
 
 ```mermaid
 flowchart LR
-    Incident["🚨 <b>Problem Alert</b>"]
-    Investigate["🔍 <b>Investigate</b>"]
-    Evidence["📜 <b>Record Clues</b>"]
-    Causes["⚖️ <b>Score Causes</b>"]
-    Repairs["🎯 <b>Rank Repairs</b>"]
-    Explain["📝 <b>Explain Decision</b>"]
-    Validate["🛡️ <b>Verify Safety Rules</b>"]
-    Human["👤 <b>Human Engineer</b>"]
+    Incident["🚨 Problem Alert"]
+    Investigate["🔍 Investigate"]
+    Evidence["📜 Record Clues"]
+    Causes["⚖️ Score Causes"]
+    Repairs["🎯 Rank Repairs"]
+    Explain["📝 Explain Decision"]
+    Validate["🛡️ Verify Safety"]
+    Human["👤 Human Engineer"]
 
-    AI["🧠 <b>AI Assistant</b><br/><small><i>(Gemini / OpenRouter)</i></small>"]
-    Rules["📐 <b>Fixed Safety Rules</b><br/><small><i>(Scoring & Fact-Checking)</i></small>"]
+    AI["🧠 AI Assistant<br/><i>(Gemini / OpenRouter)</i>"]
+    Rules["📐 Fixed Safety Rules<br/><i>(Scoring & Fact-Checking)</i>"]
 
     Incident --> Investigate --> Evidence --> Causes --> Repairs --> Explain --> Validate --> Human
 
