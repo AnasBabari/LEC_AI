@@ -190,6 +190,8 @@ export interface ScenarioMetadata {
   title: string;
   description: string;
   affected_components: ComponentEnum[];
+  is_dynamic?: boolean;
+  incident_at?: string;
 }
 
 export interface HealthResponse {

@@ -139,7 +139,7 @@ class EvidenceLedger:
 
 
 class ScenarioRepository:
-    """Loads and provides access to scenario fixtures."""
+    """Loads and provides access to scenario fixtures and dynamic incidents."""
 
     def __init__(self, data_dir: Optional[Path] = None) -> None:
         if data_dir is None:
@@ -147,27 +147,49 @@ class ScenarioRepository:
         else:
             self.data_dir = data_dir
         self.scenarios_dir = (self.data_dir / "scenarios").resolve()
+        self._dynamic_scenarios: dict[str, dict[str, Any]] = {}
+
+    def register_dynamic_scenario(self, scenario_data: dict[str, Any]) -> str:
+        """Register a synthesized incident in memory."""
+        scenario_id = str(scenario_data["id"])
+        self._dynamic_scenarios[scenario_id] = scenario_data
+        return scenario_id
 
     def list_scenarios(self) -> list[dict[str, Any]]:
-        """List all available scenario metadata."""
+        """List all available dynamic and static scenario metadata."""
         results: list[dict[str, Any]] = []
-        if not self.scenarios_dir.exists():
-            return results
-        for path in sorted(self.scenarios_dir.glob("*.json")):
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                results.append(
-                    {
-                        "id": data["id"],
-                        "title": data["title"],
-                        "description": data["description"],
-                        "affected_components": data["affected_components"],
-                    }
-                )
+        # Dynamic scenarios first
+        for s_id, data in self._dynamic_scenarios.items():
+            results.append(
+                {
+                    "id": s_id,
+                    "title": data.get("title", s_id),
+                    "description": data.get("description", ""),
+                    "affected_components": data.get("affected_components", []),
+                    "is_dynamic": True,
+                }
+            )
+
+        if self.scenarios_dir.exists():
+            for path in sorted(self.scenarios_dir.glob("*.json")):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    results.append(
+                        {
+                            "id": data["id"],
+                            "title": data["title"],
+                            "description": data["description"],
+                            "affected_components": data["affected_components"],
+                            "is_dynamic": False,
+                        }
+                    )
         return results
 
     def get_scenario(self, scenario_id: str) -> dict[str, Any]:
-        """Load a specific scenario fixture by ID with path-traversal protection."""
+        """Load a dynamic or static scenario fixture by ID with path-traversal protection."""
+        if scenario_id in self._dynamic_scenarios:
+            return self._dynamic_scenarios[scenario_id]
+
         import re
 
         if not re.match(r"^[a-zA-Z0-9_-]+$", scenario_id):
@@ -182,6 +204,7 @@ class ScenarioRepository:
         with open(file_path, "r", encoding="utf-8") as f:
             data: dict[str, Any] = json.load(f)
             return data
+
 
 
 class DiagnosticService:

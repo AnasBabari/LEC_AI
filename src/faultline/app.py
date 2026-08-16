@@ -5,7 +5,7 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
@@ -15,10 +15,13 @@ from fastapi.staticfiles import StaticFiles
 
 from faultline.diagnostics import ScenarioRepository
 from faultline.gemini import FakeGeminiProvider, GeminiProvider, LLMProviderProtocol
+from faultline.generator import IncidentSynthesisEngine
 from faultline.models import (
     AnalysisResult,
     AnalysisTimeoutError,
     AnalyzeRequest,
+    GenerateIncidentRequest,
+    GenerateIncidentResponse,
     InsufficientEvidenceError,
     InvalidModelOutputError,
     ModelAuthenticationError,
@@ -147,6 +150,29 @@ def list_scenarios() -> list[dict[str, Any]]:
     """List all available incident scenarios in the catalogue."""
     repo: ScenarioRepository = app.state.scenario_repo
     return repo.list_scenarios()
+
+
+@app.post("/api/incidents/generate", response_model=GenerateIncidentResponse)
+@app.post("/api/scenarios/generate", response_model=GenerateIncidentResponse)
+def generate_incident(req: Optional[GenerateIncidentRequest] = None) -> GenerateIncidentResponse:
+    """Generate a dynamic, realistic system failure incident on demand."""
+    seed = req.seed if req else None
+    archetype = req.archetype if req else None
+    engine = IncidentSynthesisEngine(seed=seed)
+    incident_data = engine.generate_incident(archetype=archetype)
+
+    repo: ScenarioRepository = app.state.scenario_repo
+    incident_id = repo.register_dynamic_scenario(incident_data)
+
+    return GenerateIncidentResponse(
+        id=incident_id,
+        title=incident_data["title"],
+        description=incident_data["description"],
+        affected_components=incident_data["affected_components"],
+        incident_at=incident_data["incident_at"],
+        is_dynamic=True,
+    )
+
 
 
 @app.post("/api/analyze", response_model=AnalysisResult)

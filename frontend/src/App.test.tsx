@@ -318,4 +318,32 @@ describe('Faultline App Component', () => {
       expect(screen.getByText(/Internal server timeout \(504\)/i)).toBeInTheDocument();
     });
   });
+
+  it('triggers dynamic incident generation and updates the active incident', async () => {
+    const dynamicIncident: ScenarioMetadata = {
+      id: 'inc_cache_invalidation_consumer_stalled_9999',
+      title: 'Dynamically Generated Invalidation Stalling',
+      description: 'Dynamic incident generated via procedural synthesis engine',
+      affected_components: ['cache', 'message_queue'],
+      is_dynamic: true,
+    };
+    vi.spyOn(api, 'generateIncident').mockResolvedValueOnce(dynamicIncident);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Cache Invalidation Lag/i).length).toBeGreaterThan(0);
+    });
+
+    const triggerBtn = screen.getByRole('button', { name: /Trigger New Incident/i });
+    fireEvent.click(triggerBtn);
+
+    await waitFor(() => {
+      expect(api.generateIncident).toHaveBeenCalled();
+      expect(screen.getAllByText(/Dynamically Generated Invalidation Stalling/i).length).toBeGreaterThan(0);
+      expect(screen.getByText(/inc_cache_invalidation_consumer_stalled_9999/i)).toBeInTheDocument();
+    });
+  });
 });
+
+

@@ -687,3 +687,22 @@ class AnalyzeRequest(BaseModel):
         pattern=r"^[a-zA-Z0-9_-]+$",
         description="Identifier of the scenario fixture to diagnose.",
     )
+
+
+class GenerateIncidentRequest(BaseModel):
+    """Request payload for /api/incidents/generate."""
+
+    seed: Optional[int] = Field(default=None, description="Optional deterministic seed for reproducibility.")
+    archetype: Optional[str] = Field(default=None, description="Optional failure archetype identifier.")
+
+
+class GenerateIncidentResponse(BaseModel):
+    """Response payload for /api/incidents/generate."""
+
+    id: str
+    title: str
+    description: str
+    affected_components: list[str]
+    incident_at: str
+    is_dynamic: bool = True
+

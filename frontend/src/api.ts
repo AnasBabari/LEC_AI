@@ -18,6 +18,22 @@ export async function fetchScenarios(): Promise<ScenarioMetadata[]> {
   return res.json();
 }
 
+export async function generateIncident(options?: {
+  seed?: number;
+  archetype?: string;
+}): Promise<ScenarioMetadata> {
+  const res = await fetch(`${API_BASE}/api/incidents/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(options || {}),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(errorData.detail || `Failed to generate incident: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function analyzeScenario(
   scenarioId: string,
   signal?: AbortSignal
@@ -34,3 +50,4 @@ export async function analyzeScenario(
   }
   return res.json();
 }
+

@@ -6,6 +6,7 @@ import {
   Download,
   Check,
   Layers,
+  Sparkles,
 } from 'lucide-react';
 import type { ScenarioMetadata, AnalysisResult, HealthResponse } from '../types';
 import { ComponentBadge } from './ComponentBadge';
@@ -15,8 +16,10 @@ interface ScenarioBarProps {
   selectedScenarioId: string;
   onScenarioChange: (id: string) => void;
   onRunInvestigation: () => void;
+  onTriggerNewIncident: () => void;
   onStartReplay: () => void;
   loading: boolean;
+  generating: boolean;
   isReplaying: boolean;
   health: HealthResponse | null;
   result: AnalysisResult | null;
@@ -27,8 +30,10 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
   selectedScenarioId,
   onScenarioChange,
   onRunInvestigation,
+  onTriggerNewIncident,
   onStartReplay,
   loading,
+  generating,
   isReplaying,
   health,
   result,
@@ -71,29 +76,51 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
       <div className="action-bar-container">
         <div className="scenario-selector-wrap">
           <label htmlFor="scenario-select" className="scenario-label">
-            <Layers size={14} className="text-muted" /> Choose an incident to investigate:
+            <Layers size={14} className="text-muted" /> Active System Incident:
           </label>
-          <select
-            id="scenario-select"
-            className="scenario-select"
-            value={selectedScenarioId}
-            onChange={(e) => onScenarioChange(e.target.value)}
-            disabled={loading}
-            aria-label="Choose an incident scenario to investigate"
-          >
-            {scenarios.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.title}
-              </option>
-            ))}
-          </select>
+          <div className="selector-with-trigger">
+            <select
+              id="scenario-select"
+              className="scenario-select"
+              value={selectedScenarioId}
+              onChange={(e) => onScenarioChange(e.target.value)}
+              disabled={loading || generating}
+              aria-label="Choose an incident scenario to investigate"
+            >
+              {scenarios.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.is_dynamic ? `[LIVE] ${s.title}` : s.title}
+                </option>
+              ))}
+            </select>
+
+            <button
+              type="button"
+              className="btn-trigger-incident"
+              onClick={onTriggerNewIncident}
+              disabled={loading || generating}
+              title="Generate a fresh, unpredictable realistic incident"
+            >
+              {generating ? (
+                <>
+                  <span className="spinner-xs" />
+                  <span>Synthesizing...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles size={14} className="text-amber" />
+                  <span>Trigger New Incident</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
 
         <div className="action-buttons-wrap">
           <button
             className="btn-primary"
             onClick={onRunInvestigation}
-            disabled={loading || (health !== null && health.analysis_ready === false)}
+            disabled={loading || generating || (health !== null && health.analysis_ready === false)}
             title="Start a full diagnostic investigation of this incident"
           >
             {loading ? (

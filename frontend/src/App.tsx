@@ -9,7 +9,7 @@ import {
   Clock,
   Database,
 } from 'lucide-react';
-import { analyzeScenario, fetchHealth, fetchScenarios } from './api';
+import { analyzeScenario, fetchHealth, fetchScenarios, generateIncident } from './api';
 import type {
   AnalysisResult,
   HealthResponse,
@@ -33,6 +33,7 @@ export const App: React.FC = () => {
   const [scenarios, setScenarios] = useState<ScenarioMetadata[]>([]);
   const [selectedScenarioId, setSelectedScenarioId] = useState<string>('cache_invalidation_lag');
   const [loading, setLoading] = useState<boolean>(false);
+  const [generating, setGenerating] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
@@ -95,6 +96,32 @@ export const App: React.FC = () => {
     setSelectedEvidenceId(null);
     setIsReplaying(false);
     setActiveTab('overview');
+  };
+
+  const handleTriggerNewIncident = async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setGenerating(true);
+    setError(null);
+    try {
+      const newIncident = await generateIncident();
+      setScenarios((prev) => {
+        const filtered = prev.filter((s) => s.id !== newIncident.id);
+        return [newIncident, ...filtered];
+      });
+      setSelectedScenarioId(newIncident.id);
+      setResult(null);
+      setSelectedEvidenceId(null);
+      setIsReplaying(false);
+      setActiveTab('overview');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to generate new incident';
+      setError(msg);
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const handleRunInvestigation = async () => {
@@ -247,8 +274,10 @@ export const App: React.FC = () => {
         selectedScenarioId={selectedScenarioId}
         onScenarioChange={handleScenarioChange}
         onRunInvestigation={handleRunInvestigation}
+        onTriggerNewIncident={handleTriggerNewIncident}
         onStartReplay={handleStartReplay}
         loading={loading}
+        generating={generating}
         isReplaying={isReplaying}
         health={health}
         result={result}

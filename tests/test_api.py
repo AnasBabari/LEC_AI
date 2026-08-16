@@ -154,3 +154,24 @@ def test_domain_error_http_mappings() -> None:
         resp504 = client.post("/api/analyze", json={"scenario_id": "cache_invalidation_lag"})
         assert resp504.status_code == 504
         assert "Analysis timed out" in resp504.json()["detail"]
+
+
+def test_generate_incident_endpoint() -> None:
+    """Verify POST /api/incidents/generate creates a dynamic incident and can be analyzed."""
+    with TestClient(app) as client:
+        # Generate with fixed seed
+        resp = client.post("/api/incidents/generate", json={"seed": 777})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"].startswith("inc_")
+        assert data["is_dynamic"] is True
+        assert len(data["affected_components"]) >= 2
+
+        # Analyze the generated incident
+        analyze_resp = client.post("/api/analyze", json={"scenario_id": data["id"]})
+        assert analyze_resp.status_code == 200
+        analysis = analyze_resp.json()
+        assert analysis["scenario_id"] == data["id"]
+        assert analysis["state"] == "VALIDATED"
+        assert len(analysis["strategy_ranking"]) == 5
+
