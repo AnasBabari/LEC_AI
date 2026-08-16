@@ -354,10 +354,15 @@ class FakeGeminiProvider:
                 or (obs.dimension.value == "query_efficiency" and obs.status.value == "degraded")
             )
         ]
+        has_queue_or_cache_fault = any(
+            obs.component.value in ["message_queue", "cache"] and obs.status.value in ["degraded", "failed"]
+            for obs in evidence_ledger
+        )
         queue_support_ids = [
             obs.id
             for obs in evidence_ledger
-            if (
+            if has_queue_or_cache_fault
+            and (
                 (
                     obs.component.value == "message_queue"
                     and obs.dimension.value in ["backlog", "availability"]
@@ -366,7 +371,7 @@ class FakeGeminiProvider:
                 or (
                     obs.component.value == "cache"
                     and obs.dimension.value in ["freshness", "availability"]
-                    and obs.status.value == "degraded"
+                    and obs.status.value in ["degraded", "failed"]
                 )
                 or (
                     obs.component.value == "database"
@@ -381,8 +386,8 @@ class FakeGeminiProvider:
             for obs in evidence_ledger
             if obs.component.value == "api_gateway"
             and (
-                (obs.dimension.value == "throughput" and obs.status.value == "degraded")
-                or (obs.dimension.value == "latency" and obs.status.value == "degraded")
+                (obs.dimension.value == "throughput" and obs.status.value in ["degraded", "failed"])
+                or (obs.dimension.value == "latency" and obs.status.value in ["degraded", "failed"])
             )
         ]
         db_cap_support_ids = [
@@ -390,8 +395,8 @@ class FakeGeminiProvider:
             for obs in evidence_ledger
             if obs.component.value == "database"
             and obs.dimension.value == "latency"
-            and obs.scope == "workload"
             and obs.status.value in ["degraded", "failed"]
+            and obs.scope in ["workload", "synthetic_probe", "resource_monitor"]
         ]
         db_cap_oppose_ids = [
             obs.id

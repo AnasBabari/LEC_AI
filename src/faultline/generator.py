@@ -79,7 +79,7 @@ class IncidentSynthesisEngine:
             "description": "Unoptimized long-running database transactions hold exclusive locks, exhausting all connection pools and bringing API response times to a standstill.",
             "affected_components": ["database", "api_gateway"],
             "primary_cause": "DATABASE_CAPACITY_DEGRADATION",
-            "expected_repair": "FAILOVER_DATABASE",
+            "expected_repair": "THROTTLE_TRAFFIC",
         },
     }
 
@@ -146,6 +146,20 @@ class IncidentSynthesisEngine:
         if archetype == "FLASH_SALE_SURGE":
             gw_p99 = round(self.rng.uniform(2800.0, 4800.0), 1)
             gw_err = round(self.rng.uniform(14.0, 28.0), 1)
+            gw_tput = round(self.rng.uniform(14000.0, 28000.0), 1)
+            items.append({
+                "component": ComponentEnum.API_GATEWAY.value,
+                "signal": "gateway_throughput",
+                "dimension": HealthDimension.THROUGHPUT.value,
+                "status": HealthStatus.DEGRADED.value,
+                "value": gw_tput,
+                "unit": "req/sec",
+                "offset_minutes": -self.rng.randint(1, 4),
+                "window_duration_seconds": 300,
+                "scope": "workload",
+                "reliability": ReliabilityLevel.VERIFIED.value,
+                "details": f"API Gateway request throughput surged past ingress limit at {gw_tput} req/sec.",
+            })
         elif archetype == "CACHE_INVALIDATION_CONSUMER_STALLED":
             gw_p99 = round(self.rng.uniform(2100.0, 3200.0), 1)
             gw_err = round(self.rng.uniform(6.0, 14.0), 1)
@@ -158,6 +172,20 @@ class IncidentSynthesisEngine:
         else:
             gw_p99 = round(self.rng.uniform(2000.0, 3600.0), 1)
             gw_err = round(self.rng.uniform(8.0, 18.0), 1)
+            gw_tput = round(self.rng.uniform(2400.0, 4800.0), 1)
+            items.append({
+                "component": ComponentEnum.API_GATEWAY.value,
+                "signal": "gateway_throughput",
+                "dimension": HealthDimension.THROUGHPUT.value,
+                "status": HealthStatus.HEALTHY.value,
+                "value": gw_tput,
+                "unit": "req/sec",
+                "offset_minutes": -self.rng.randint(1, 4),
+                "window_duration_seconds": 300,
+                "scope": "workload",
+                "reliability": ReliabilityLevel.VERIFIED.value,
+                "details": f"API Gateway request throughput normal at {gw_tput} req/sec.",
+            })
 
         items.append({
             "component": ComponentEnum.API_GATEWAY.value,
@@ -249,46 +277,74 @@ class IncidentSynthesisEngine:
             })
 
         # 3. Database Telemetry (Workload Scope)
-        if archetype == "DATABASE_CAPACITY_DEGRADATION":
-            db_load = round(self.rng.uniform(94.0, 99.5), 1)
-            db_lat = round(self.rng.uniform(1800.0, 3800.0), 1)
-        elif archetype == "DATABASE_INDEX_REGRESSION":
-            db_load = round(self.rng.uniform(85.0, 95.0), 1)
-            db_lat = round(self.rng.uniform(2200.0, 4500.0), 1)
-        elif archetype == "CACHE_INVALIDATION_CONSUMER_STALLED":
-            db_load = round(self.rng.uniform(88.0, 96.0), 1)
-            db_lat = round(self.rng.uniform(1400.0, 2600.0), 1)
+        if archetype == "DATABASE_INDEX_REGRESSION":
+            scan_rate = round(self.rng.uniform(380.0, 680.0), 1)
+            items.append({
+                "component": ComponentEnum.DATABASE.value,
+                "signal": "database_table_scan_rate",
+                "dimension": HealthDimension.QUERY_EFFICIENCY.value,
+                "status": HealthStatus.DEGRADED.value,
+                "value": scan_rate,
+                "unit": "scans/sec",
+                "offset_minutes": -self.rng.randint(1, 4),
+                "window_duration_seconds": 300,
+                "scope": "workload",
+                "reliability": ReliabilityLevel.VERIFIED.value,
+                "details": f"High sequential full table scan rate detected on 'orders' table ({scan_rate} scans/sec).",
+            })
+        elif archetype == "REPLICA_REPLICATION_LAG":
+            rep_lag = float(self.rng.randint(90, 240))
+            items.append({
+                "component": ComponentEnum.DATABASE.value,
+                "signal": "replica_lag_seconds",
+                "dimension": HealthDimension.FRESHNESS.value,
+                "status": HealthStatus.DEGRADED.value,
+                "value": rep_lag,
+                "unit": "seconds",
+                "offset_minutes": -self.rng.randint(1, 4),
+                "window_duration_seconds": 300,
+                "scope": "workload",
+                "reliability": ReliabilityLevel.VERIFIED.value,
+                "details": f"Replication stream delay between primary database and read replicas reached {rep_lag} seconds.",
+            })
         else:
-            db_load = round(self.rng.uniform(80.0, 92.0), 1)
-            db_lat = round(self.rng.uniform(800.0, 2200.0), 1)
+            if archetype == "DATABASE_CAPACITY_DEGRADATION":
+                db_load = round(self.rng.uniform(95.0, 99.8), 1)
+                db_lat = round(self.rng.uniform(2800.0, 4800.0), 1)
+            elif archetype == "CACHE_INVALIDATION_CONSUMER_STALLED":
+                db_load = round(self.rng.uniform(88.0, 96.0), 1)
+                db_lat = round(self.rng.uniform(1400.0, 2600.0), 1)
+            else:
+                db_load = round(self.rng.uniform(80.0, 92.0), 1)
+                db_lat = round(self.rng.uniform(800.0, 2200.0), 1)
 
-        items.append({
-            "component": ComponentEnum.DATABASE.value,
-            "signal": "connection_pool_load_pct",
-            "dimension": HealthDimension.LATENCY.value,
-            "status": HealthStatus.DEGRADED.value if db_load > 80.0 else HealthStatus.HEALTHY.value,
-            "value": db_load,
-            "unit": "%",
-            "offset_minutes": -self.rng.randint(2, 6),
-            "window_duration_seconds": 300,
-            "scope": "workload",
-            "reliability": ReliabilityLevel.VERIFIED.value,
-            "details": f"PostgreSQL active connection pool utilization saturated at {db_load}%.",
-        })
+            items.append({
+                "component": ComponentEnum.DATABASE.value,
+                "signal": "connection_pool_load_pct",
+                "dimension": HealthDimension.LATENCY.value,
+                "status": HealthStatus.DEGRADED.value if db_load > 80.0 else HealthStatus.HEALTHY.value,
+                "value": db_load,
+                "unit": "%",
+                "offset_minutes": -self.rng.randint(2, 6),
+                "window_duration_seconds": 300,
+                "scope": "workload",
+                "reliability": ReliabilityLevel.VERIFIED.value,
+                "details": f"PostgreSQL active connection pool utilization saturated at {db_load}%.",
+            })
 
-        items.append({
-            "component": ComponentEnum.DATABASE.value,
-            "signal": "workload_query_latency_ms",
-            "dimension": HealthDimension.LATENCY.value,
-            "status": HealthStatus.DEGRADED.value if db_lat > 500.0 else HealthStatus.HEALTHY.value,
-            "value": db_lat,
-            "unit": "ms",
-            "offset_minutes": -self.rng.randint(1, 5),
-            "window_duration_seconds": 300,
-            "scope": "workload",
-            "reliability": ReliabilityLevel.VERIFIED.value,
-            "details": f"Application query execution latency averaged {db_lat}ms across active connections.",
-        })
+            items.append({
+                "component": ComponentEnum.DATABASE.value,
+                "signal": "workload_query_latency_ms",
+                "dimension": HealthDimension.LATENCY.value,
+                "status": HealthStatus.DEGRADED.value if db_lat > 500.0 else HealthStatus.HEALTHY.value,
+                "value": db_lat,
+                "unit": "ms",
+                "offset_minutes": -self.rng.randint(1, 5),
+                "window_duration_seconds": 300,
+                "scope": "workload",
+                "reliability": ReliabilityLevel.VERIFIED.value,
+                "details": f"Application query execution latency averaged {db_lat}ms across active connections.",
+            })
 
 
         # 4. Message Queue Telemetry
@@ -345,9 +401,9 @@ class IncidentSynthesisEngine:
 
         # Database Direct Synthetic Probe
         if archetype == "DATABASE_CAPACITY_DEGRADATION":
-            probe_lat = round(self.rng.uniform(1200.0, 2800.0), 1)
+            probe_lat = round(self.rng.uniform(3200.0, 5800.0), 1)
             probe_status = HealthStatus.DEGRADED.value
-            probe_details = f"Direct database health probe latency elevated to {probe_lat}ms."
+            probe_details = f"Direct database health probe latency severely elevated to {probe_lat}ms due to capacity exhaustion."
         else:
             # Scope tension: Direct ping is healthy (1.2ms - 2.8ms), while user workload is degraded!
             probe_lat = round(self.rng.uniform(1.2, 2.8), 1)
@@ -445,14 +501,14 @@ class IncidentSynthesisEngine:
         elif archetype == "DATABASE_INDEX_REGRESSION":
             items.append({
                 "component": ComponentEnum.DATABASE.value,
-                "signal": "migration_ddl_event",
-                "dimension": HealthDimension.QUERY_EFFICIENCY.value,
+                "signal": "schema_migration_event",
+                "dimension": HealthDimension.LATENCY.value,
                 "status": HealthStatus.DEGRADED.value,
                 "value": 1.0,
                 "unit": "event",
                 "offset_minutes": -self.rng.randint(15, 30),
-                "window_duration_seconds": 60,
-                "scope": "audit_logs",
+                "window_duration_seconds": 600,
+                "scope": "migration_history",
                 "reliability": ReliabilityLevel.VERIFIED.value,
                 "details": "Schema migration DDL 'V4.12__drop_legacy_indexes.sql' dropped index 'idx_orders_customer_lookup'.",
             })
@@ -499,6 +555,19 @@ class IncidentSynthesisEngine:
                 "details": "Read replica replication delay exceeded SLA threshold (measured at >60s).",
             })
         elif archetype == "DATABASE_CAPACITY_DEGRADATION":
+            items.append({
+                "component": ComponentEnum.DATABASE.value,
+                "signal": "db_cpu_saturation_event",
+                "dimension": HealthDimension.LATENCY.value,
+                "status": HealthStatus.DEGRADED.value,
+                "value": round(self.rng.uniform(96.0, 100.0), 1),
+                "unit": "%",
+                "offset_minutes": -self.rng.randint(4, 12),
+                "window_duration_seconds": 60,
+                "scope": "resource_monitor",
+                "reliability": ReliabilityLevel.VERIFIED.value,
+                "details": "Primary database CPU and IOPS saturated at 100% under runaway analytical load.",
+            })
             items.append({
                 "component": ComponentEnum.DATABASE.value,
                 "signal": "lock_wait_timeout_count",

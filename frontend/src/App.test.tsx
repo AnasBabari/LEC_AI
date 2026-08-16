@@ -341,6 +341,7 @@ describe('Faultline App Component', () => {
     await waitFor(() => {
       expect(api.generateIncident).toHaveBeenCalled();
       expect(screen.getAllByText(/Dynamically Generated Invalidation Stalling/i).length).toBeGreaterThan(0);
+      expect(screen.getByText(/⚡ GENERATED/i)).toBeInTheDocument();
       expect(screen.getByText(/inc_cache_invalidation_consumer_stalled_9999/i)).toBeInTheDocument();
     });
   });

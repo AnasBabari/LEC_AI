@@ -89,7 +89,7 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
             >
               {scenarios.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.is_dynamic ? `[LIVE] ${s.title}` : s.title}
+                  {s.is_dynamic ? `[GENERATED] ${s.title}` : s.title}
                 </option>
               ))}
             </select>
@@ -99,7 +99,7 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
               className="btn-trigger-incident"
               onClick={onTriggerNewIncident}
               disabled={loading || generating}
-              title="Generate a fresh, unpredictable realistic incident"
+              title="Generate a newly synthesized incident on demand"
             >
               {generating ? (
                 <>
@@ -182,7 +182,7 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
                   <h2 className="context-title">{selectedScenario.title}</h2>
                   {selectedScenario.is_dynamic && (
                     <span className="live-incident-pill">
-                      <span className="status-dot dot-amber dot-pulse" /> Live Generated
+                      <span className="status-dot dot-amber dot-pulse" /> ⚡ GENERATED
                     </span>
                   )}
                 </div>

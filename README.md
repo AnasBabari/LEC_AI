@@ -357,8 +357,8 @@ Suggested commands (like `kubectl rollout restart ...`) are display-only illustr
 
 Faultline includes a React web dashboard that shows:
 
-- **Active Incident Controller** — Trigger unpredictable, freshly synthesized outages on demand or choose from baseline scenarios;
-- **Initial Incident Alert** — Real-time severity, detection time, and affected services overview;
+- **Active Incident Controller** — Trigger newly synthesized incidents with randomized diagnostics on demand or choose from baseline scenarios;
+- **Initial Incident Alert** — Severity, incident timestamp, and affected services overview;
 - **Step-by-Step Investigation Timeline** — Interactive replay controls (Play, Pause, Step Forward, Speed 0.5x–2x);
 - **Diagnostic Clues & Scope Tensions** — Juxtaposed direct synthetic health probes vs production user telemetry;
 - **All Recorded Evidence** — Complete immutable ledger with source group limits, freshness, and directness scores;
@@ -440,7 +440,7 @@ The engine synthesizes incidents across six core operational failure archetypes:
 - **`FLASH_SALE_SURGE`** — Extreme promotional traffic overwhelms backend worker pools and ingress gateways. Winner: `THROTTLE_TRAFFIC`.
 - **`CACHE_CLUSTER_OUTAGE`** — A primary Redis node crashes and fails over, causing transient cache misses and connection pool saturation. Winner: `RESTART_CACHE`.
 - **`REPLICA_REPLICATION_LAG`** — High write volumes cause read replica synchronization lag, surfacing stale data reads. Winner: `THROTTLE_TRAFFIC`.
-- **`DATABASE_CAPACITY_DEGRADATION`** — Unoptimized long-running transactions exhaust connection pools and locks. Winner: `FAILOVER_DATABASE`.
+- **`DATABASE_CAPACITY_DEGRADATION`** — Unoptimized long-running transactions exhaust connection pools and locks. Winner: `THROTTLE_TRAFFIC`.
 
 ### What I would build next
 

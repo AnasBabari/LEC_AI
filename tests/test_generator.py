@@ -2,6 +2,8 @@
 
 from datetime import datetime
 
+import pytest
+
 from faultline.diagnostics import ScenarioRepository
 from faultline.gemini import FakeGeminiProvider
 from faultline.generator import IncidentSynthesisEngine
@@ -62,32 +64,47 @@ def test_generator_stress_test_100_random_incidents() -> None:
             assert item["value"] >= 0.0
 
 
-def test_dynamic_incident_end_to_end_orchestrator_resolution() -> None:
-    """Test full automated investigation and validation of a synthesized incident."""
-    engine = IncidentSynthesisEngine(seed=999)
-    incident_data = engine.generate_incident(archetype="CACHE_INVALIDATION_CONSUMER_STALLED")
+@pytest.mark.parametrize(
+    ("archetype", "expected_strategy"),
+    [
+        ("CACHE_INVALIDATION_CONSUMER_STALLED", "RECOVER_CONSUMER_AND_DRAIN"),
+        ("DATABASE_INDEX_REGRESSION", "REBUILD_DATABASE_INDEX"),
+        ("FLASH_SALE_SURGE", "THROTTLE_TRAFFIC"),
+        ("CACHE_CLUSTER_OUTAGE", "RESTART_CACHE"),
+        ("REPLICA_REPLICATION_LAG", "THROTTLE_TRAFFIC"),
+        ("DATABASE_CAPACITY_DEGRADATION", "THROTTLE_TRAFFIC"),
+    ],
+)
+def test_generated_archetype_resolves_to_expected_strategy(
+    archetype: str,
+    expected_strategy: str,
+) -> None:
+    """Verify that all 6 procedural generator archetypes consistently resolve to their expected winning strategy across seeds."""
+    for seed in (42, 101, 777):
+        engine = IncidentSynthesisEngine(seed=seed)
+        incident_data = engine.generate_incident(archetype=archetype)
 
-    repo = ScenarioRepository()
-    incident_id = repo.register_dynamic_scenario(incident_data)
+        repo = ScenarioRepository()
+        incident_id = repo.register_dynamic_scenario(incident_data)
 
-    policy = PolicyEngine()
-    provider = FakeGeminiProvider()
-    orchestrator = IncidentOrchestrator(
-        provider=provider,
-        policy=policy,
-        scenario_repo=repo,
-    )
+        policy = PolicyEngine()
+        provider = FakeGeminiProvider()
+        orchestrator = IncidentOrchestrator(
+            provider=provider,
+            policy=policy,
+            scenario_repo=repo,
+        )
 
-    result = orchestrator.analyze_scenario(incident_id)
-    assert isinstance(result, AnalysisResult)
-    assert result.scenario_id == incident_id
-    assert len(result.hypotheses) >= 2
-    assert len(result.strategy_ranking) == 5
-    assert result.strategy_ranking[0].strategy_id == "RECOVER_CONSUMER_AND_DRAIN"
+        result = orchestrator.analyze_scenario(incident_id)
+        assert isinstance(result, AnalysisResult)
+        assert result.scenario_id == incident_id
+        assert len(result.hypotheses) >= 2
+        assert len(result.strategy_ranking) == 5
+        assert result.strategy_ranking[0].strategy_id == expected_strategy
 
-    # Verify report validation gate passes
-    validator = ReportValidator(policy)
-    assert validator.validate(result) is True
+        validator = ReportValidator(policy)
+        assert validator.validate(result) is True
+
 
 
 
