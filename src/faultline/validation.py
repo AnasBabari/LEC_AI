@@ -456,6 +456,7 @@ class ReportValidator:
             | {c.component.value.lower().replace("_", " ") for c in result.conflicts}
             | {obs.component.value.lower() for obs in result.evidence}
             | {obs.component.value.lower().replace("_", " ") for obs in result.evidence}
+            | {"database", "db", "cache", "redis", "gateway", "api gateway", "queue", "message queue", "ingress", "cluster", "service", "replica", "primary"}
         )
         contra_lower = contradiction_text.lower()
         has_id_ref = any(cid in contra_lower for cid in detected_conflict_ids | detected_evidence_ids)
