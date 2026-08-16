@@ -308,7 +308,7 @@ export const App: React.FC = () => {
             </div>
             <h3 className="idle-title">Ready to Investigate</h3>
             <p className="idle-desc">
-              Pick an incident scenario above and click <strong>Diagnose This Incident</strong> to find out what went wrong, why, and how to fix it.
+              Select an active incident or click <strong>Trigger New Incident</strong> to generate a fresh outage on demand, then click <strong>Diagnose This Incident</strong> to find out what went wrong, why, and how to fix it.
             </p>
           </div>
         </div>

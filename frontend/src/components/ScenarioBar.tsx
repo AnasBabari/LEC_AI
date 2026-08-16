@@ -178,8 +178,18 @@ export const ScenarioBar: React.FC<ScenarioBarProps> = ({
             <div className="context-title-wrap">
               <span className="context-indicator-bar" />
               <div>
-                <h2 className="context-title">{selectedScenario.title}</h2>
-                <div className="context-id font-mono">Scenario: {selectedScenario.id}</div>
+                <div className="context-title-row">
+                  <h2 className="context-title">{selectedScenario.title}</h2>
+                  {selectedScenario.is_dynamic && (
+                    <span className="live-incident-pill">
+                      <span className="status-dot dot-amber dot-pulse" /> Live Generated
+                    </span>
+                  )}
+                </div>
+                <div className="context-id font-mono">
+                  {selectedScenario.is_dynamic ? 'Generated ID: ' : 'Scenario: '}
+                  {selectedScenario.id}
+                </div>
               </div>
             </div>
             <div className="context-components">

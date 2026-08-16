@@ -743,6 +743,32 @@ body::after {
   border-radius: var(--radius-full);
 }
 
+.context-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.live-incident-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #fbbf24;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+}
+
+.dot-amber {
+  background: #f59e0b;
+}
+
 .context-title {
   font-size: 15px;
   font-weight: 700;
@@ -753,6 +779,7 @@ body::after {
   font-size: 11px;
   color: var(--text-muted);
 }
+
 
 .context-components {
   display: flex;

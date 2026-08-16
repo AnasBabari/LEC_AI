@@ -357,14 +357,15 @@ Suggested commands (like `kubectl rollout restart ...`) are display-only illustr
 
 Faultline includes a React web dashboard that shows:
 
-- the initial incident alert;
-- a step-by-step investigation timeline;
-- all collected evidence with source, status, and values;
-- conflicting clues and how they are resolved;
-- scored root-cause hypotheses;
-- ranked repair strategies with scores;
-- a written explanation defending the recommendation;
-- operator safety status.
+- **Active Incident Controller** — Trigger unpredictable, freshly synthesized outages on demand or choose from baseline scenarios;
+- **Initial Incident Alert** — Real-time severity, detection time, and affected services overview;
+- **Step-by-Step Investigation Timeline** — Interactive replay controls (Play, Pause, Step Forward, Speed 0.5x–2x);
+- **Diagnostic Clues & Scope Tensions** — Juxtaposed direct synthetic health probes vs production user telemetry;
+- **All Recorded Evidence** — Complete immutable ledger with source group limits, freshness, and directness scores;
+- **Scored Root-Cause Hypotheses** — Policy-weighted decision weights, causal chains, and mathematical breakdowns;
+- **4-Dimensional Strategy Comparison** — Impact (60%), Safety (20%), Speed (15%), Affordability (5%) trade-off matrix;
+- **Executive Defense Brief** — Plain-English explanation defending the recommendation and reconciling contradictions;
+- **Safety Command Console** — Illustrative operator repair commands with strict approval safety boundaries.
 
 ---
 
@@ -418,7 +419,7 @@ docker run -p 8000:8000 \
 
 Faultline is a working decision-support prototype, not a production control plane.
 
-- Diagnostic sources are deterministic scenario simulators, not live Prometheus, database, cache, or queue integrations.
+- Diagnostic sources are deterministic scenario simulators and procedural synthesis generators, not live Prometheus, database, cache, or queue integrations.
 - Repair commands are illustrative strings. They are never executed.
 - Evidence and strategy weights are explicit policy choices, not learned probabilities or guarantees of recovery.
 - AI models are optional. A multi-tier fallback cascade (Gemini Primary -> Gemini Secondary -> OpenRouter Tertiary) handles transient live issues, while offline mode makes the full workflow reproducible for assessment and CI without credentials.
@@ -428,22 +429,24 @@ These boundaries are deliberate: the assessment focuses on reasoning through con
 
 ---
 
-## Scenarios
+## Dynamic Incident Generation & Scenarios
 
-Faultline includes six tested scenario fixtures:
+Faultline features a built-in **Procedural Incident Synthesis Engine** (`IncidentSynthesisEngine`) that creates fresh, unpredictable failure incidents on demand with randomized metric jitter, realistic scope tensions, and background noise.
 
-- **`cache_invalidation_lag`** (Canonical Incident) — A stalled invalidation queue consumer causes stale cache entries and cascading database query overload. Winner: `RECOVER_CONSUMER_AND_DRAIN`.
-- **`index_regression`** — A release accidentally drops a database index. Direct health probes pass, but user workload queries degrade severely. Winner: `REBUILD_DATABASE_INDEX`.
-- **`flash_sale_surge`** — Extreme promotional traffic overwhelms backend worker pools and ingress gateways. Winner: `THROTTLE_TRAFFIC`.
-- **`cache_cluster_outage`** — A primary Redis node crashes and fails over, causing transient cache misses and connection pool saturation. Winner: `RESTART_CACHE`.
-- **`replica_replication_lag`** — High write volumes cause read replica synchronization lag, surfacing stale data reads. Winner: `THROTTLE_TRAFFIC`.
-- **`database_capacity_exhaustion`** — Unoptimized long-running transactions exhaust connection pools and locks. Winner: `FAILOVER_DATABASE`.
+The engine synthesizes incidents across six core operational failure archetypes:
+
+- **`CACHE_INVALIDATION_CONSUMER_STALLED`** — A stalled invalidation queue consumer causes stale cache entries and cascading database query overload. Winner: `RECOVER_CONSUMER_AND_DRAIN`.
+- **`DATABASE_INDEX_REGRESSION`** — A release accidentally drops a database index. Direct health probes pass, but user workload queries degrade severely. Winner: `REBUILD_DATABASE_INDEX`.
+- **`FLASH_SALE_SURGE`** — Extreme promotional traffic overwhelms backend worker pools and ingress gateways. Winner: `THROTTLE_TRAFFIC`.
+- **`CACHE_CLUSTER_OUTAGE`** — A primary Redis node crashes and fails over, causing transient cache misses and connection pool saturation. Winner: `RESTART_CACHE`.
+- **`REPLICA_REPLICATION_LAG`** — High write volumes cause read replica synchronization lag, surfacing stale data reads. Winner: `THROTTLE_TRAFFIC`.
+- **`DATABASE_CAPACITY_DEGRADATION`** — Unoptimized long-running transactions exhaust connection pools and locks. Winner: `FAILOVER_DATABASE`.
 
 ### What I would build next
 
-- Dynamic scenario generator using synthetic chaos engineering faults.
+- Direct Prometheus / OpenTelemetry OTLP real-time telemetry stream ingestion.
 - Automated post-mortem exporter to Markdown or GitHub Issues.
-- Direct Prometheus / OpenTelemetry OTLP telemetry ingestion.
+- Real-time Slack & PagerDuty incident notification webhooks with operator approval callbacks.
 
 ---
 
