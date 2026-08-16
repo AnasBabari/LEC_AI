@@ -333,25 +333,32 @@ class FakeGeminiProvider:
         )
 
     @staticmethod
-    def _find_obs(
+    def _find_semantic_obs(
         ledger: list[EvidenceObservation],
-        signal: str,
         component: Optional[str] = None,
+        dimension: Optional[str] = None,
         scope: Optional[str] = None,
+        status: Optional[str] = None,
+        signals: Optional[set[str]] = None,
     ) -> Optional[EvidenceObservation]:
         for obs in ledger:
             if component and obs.component.value != component:
                 continue
+            if dimension and obs.dimension.value != dimension:
+                continue
             if scope and obs.scope != scope:
                 continue
-            if obs.signal == signal or signal in obs.signal:
-                return obs
+            if status and obs.status.value != status:
+                continue
+            if signals and obs.signal not in signals and not any(s in obs.signal for s in signals):
+                continue
+            return obs
         return None
 
     @staticmethod
-    def _fmt_obs(obs: Optional[EvidenceObservation], default_val: str) -> str:
+    def _fmt_obs_val(obs: Optional[EvidenceObservation]) -> Optional[str]:
         if obs is None:
-            return default_val
+            return None
         val = obs.value
         unit = obs.unit
         if val.is_integer():
@@ -452,35 +459,54 @@ class FakeGeminiProvider:
 
         # Scenario: Index regression
         if index_reg_ids:
-            db_query_lat = self._fmt_obs(self._find_obs(evidence_ledger, "query_latency", "database"), "1850ms")
-            db_synth = self._fmt_obs(self._find_obs(evidence_ledger, "response_time", "database", scope="synthetic_probe") or self._find_obs(evidence_ledger, "synthetic", "database"), "1.5ms")
+            db_wl = self._find_semantic_obs(evidence_ledger, component="database", dimension="latency", scope="workload")
+            db_synth = self._find_semantic_obs(evidence_ledger, component="database", dimension="latency", scope="synthetic_probe")
+            scan_obs = self._find_semantic_obs(evidence_ledger, component="database", dimension="query_efficiency")
+            db_query_lat = self._fmt_obs_val(db_wl)
+            db_synth_val = self._fmt_obs_val(db_synth)
+            scan_rate_val = self._fmt_obs_val(scan_obs)
+
+            scan_clause = f"Sequential full table scans triggered on order search queries ({scan_rate_val})" if scan_rate_val else "Sequential full table scans triggered on order search queries"
+            lat_clause = (
+                f"Application workload query latency rose ({db_query_lat}) while synthetic health probe responds ({db_synth_val})"
+                if (db_query_lat and db_synth_val)
+                else "Application workload query latency rose significantly while synthetic health probes remain healthy"
+            )
+            uncertainty_text = (
+                f"Direct synthetic ping executes in {db_synth_val}, confirming engine is healthy but queries lacking index are degraded."
+                if db_synth_val
+                else "Direct synthetic ping confirms engine is healthy but queries lacking index are degraded."
+            )
+
             hypotheses.append(
                 HypothesisDraft(
                     cause_code=RootCauseCode.DATABASE_INDEX_REGRESSION,
                     summary="A recent schema migration dropped a critical query index, forcing full sequential table scans on search endpoints.",
                     causal_chain=[
                         "Schema migration dropped composite index on 'orders' table",
-                        "Sequential full table scans triggered on all order search queries",
-                        f"Application workload query latency rose to {db_query_lat} while synthetic health probe responds in {db_synth}",
+                        scan_clause,
+                        lat_clause,
                     ],
                     supporting_evidence_ids=index_reg_ids,
                     opposing_evidence_ids=[],
-                    unresolved_uncertainties=[
-                        f"Direct synthetic ping executes primary key lookup in {db_synth}, confirming engine is healthy but queries lacking index are degraded.",
-                    ],
+                    unresolved_uncertainties=[uncertainty_text],
                 )
             )
 
         # Scenario: Cache cluster outage
         if cache_node_support_ids:
-            cache_avail = self._fmt_obs(self._find_obs(evidence_ledger, "availability", "cache"), "0%")
+            cache_avail = self._find_semantic_obs(evidence_ledger, component="cache", dimension="availability")
+            cache_avail_val = self._fmt_obs_val(cache_avail)
+            avail_summary = f"Cache cluster nodes crashed or failed health checks, driving cache availability to {cache_avail_val} and causing query cascades." if cache_avail_val else "Cache cluster nodes crashed or failed health checks, driving down cache availability and causing query cascades."
+            avail_chain = f"Cache availability dropped to {cache_avail_val} with TCP connection failures" if cache_avail_val else "Cache availability dropped with TCP connection failures"
+
             hypotheses.append(
                 HypothesisDraft(
                     cause_code=RootCauseCode.CACHE_NODE_FAILURE,
-                    summary=f"Cache cluster nodes crashed or failed health checks, driving cache availability to {cache_avail} and causing query cascades.",
+                    summary=avail_summary,
                     causal_chain=[
                         "Redis cache node process terminated unexpectedly (OOM code 137)",
-                        f"Cache availability dropped to {cache_avail} with TCP connection failures",
+                        avail_chain,
                         "All production queries bypassed cache and hit database directly",
                     ],
                     supporting_evidence_ids=cache_node_support_ids,
@@ -493,14 +519,17 @@ class FakeGeminiProvider:
 
         # Scenario: Read replica lag
         if replica_support_ids:
-            rep_lag = self._fmt_obs(self._find_obs(evidence_ledger, "replica_lag", "database"), "180 seconds")
+            rep_lag = self._find_semantic_obs(evidence_ledger, component="database", dimension="freshness")
+            rep_lag_val = self._fmt_obs_val(rep_lag)
+            lag_chain = f"Replication stream fell behind by over {rep_lag_val}" if rep_lag_val else "Replication stream fell behind significantly"
+
             hypotheses.append(
                 HypothesisDraft(
                     cause_code=RootCauseCode.REPLICA_LAG,
                     summary="Database read replica replication stream is lagging significantly behind primary database.",
                     causal_chain=[
                         "Large batch data ingestion triggered on database primary",
-                        f"Replication stream fell behind by over {rep_lag}",
+                        lag_chain,
                         "Read queries against replica returned stale customer records",
                     ],
                     supporting_evidence_ids=replica_support_ids,
@@ -513,35 +542,54 @@ class FakeGeminiProvider:
 
         # Canonical Scenario: Cache invalidation consumer stall
         if queue_support_ids:
-            q_depth = self._fmt_obs(self._find_obs(evidence_ledger, "queue_depth", "message_queue") or self._find_obs(evidence_ledger, "unconsumed", "message_queue"), "42,000")
-            db_pool = self._fmt_obs(self._find_obs(evidence_ledger, "pool_saturation", "database"), "92%")
+            q_backlog = self._find_semantic_obs(evidence_ledger, component="message_queue", dimension="backlog")
+            db_pool = self._find_semantic_obs(evidence_ledger, component="database", scope="workload", signals={"connection_pool_load_pct", "database_pool_saturation", "pool_saturation"})
+            cache_stale = self._find_semantic_obs(evidence_ledger, component="cache", dimension="freshness")
+            q_backlog_val = self._fmt_obs_val(q_backlog)
+            db_pool_val = self._fmt_obs_val(db_pool)
+            cache_stale_val = self._fmt_obs_val(cache_stale)
+
+            summary_text = f"Cache invalidation queue consumer stalled, creating a {q_backlog_val} item event backlog, stale cache reads, and cascading DB query saturation." if q_backlog_val else "Cache invalidation queue consumer stalled, creating an unconsumed event backlog, stale cache reads, and cascading DB query saturation."
+            backlog_chain = f"Cache invalidation messages accumulated to >{q_backlog_val} unconsumed items" if q_backlog_val else "Cache invalidation messages accumulated in queue"
+            stale_chain = f"Cache entries remained stale (stale read rate {cache_stale_val}), causing cache-miss cascade" if cache_stale_val else "Cache entries remained stale, causing application cache-miss cascade"
+            pool_chain = f"Database connection pool became saturated ({db_pool_val}) handling direct cache misses" if db_pool_val else "Database connection pool became saturated handling direct cache misses"
+            drain_uncertainty = f"Time required to drain the {q_backlog_val} message backlog under current traffic." if q_backlog_val else "Time required to drain the invalidation message backlog under current traffic."
+
             hypotheses.append(
                 HypothesisDraft(
                     cause_code=RootCauseCode.CACHE_INVALIDATION_CONSUMER_STALLED,
-                    summary=f"Cache invalidation queue consumer stalled, creating a {q_depth} item event backlog, stale cache reads, and cascading DB query saturation.",
+                    summary=summary_text,
                     causal_chain=[
                         "Invalidation queue consumer worker crashed (OOM killer exit code 137)",
-                        f"Cache invalidation messages accumulated to >{q_depth} unconsumed items",
-                        "Cache entries remained stale, causing application cache-miss cascade",
-                        f"Database connection pool became saturated ({db_pool}) handling direct cache misses",
+                        backlog_chain,
+                        stale_chain,
+                        pool_chain,
                     ],
                     supporting_evidence_ids=queue_support_ids,
                     opposing_evidence_ids=[],
                     unresolved_uncertainties=[
                         "Exact root cause of the initial consumer worker OOM crash remains uninspected.",
-                        f"Time required to drain the {q_depth} message backlog under current traffic.",
+                        drain_uncertainty,
                     ],
                 )
             )
 
         if traffic_support_ids:
+            gw_tput = self._find_semantic_obs(evidence_ledger, component="api_gateway", dimension="throughput", scope="workload")
+            gw_lat = self._find_semantic_obs(evidence_ledger, component="api_gateway", dimension="latency", scope="workload")
+            gw_tput_val = self._fmt_obs_val(gw_tput)
+            gw_lat_val = self._fmt_obs_val(gw_lat)
+
+            tput_chain = f"External ingress traffic rate increased significantly ({gw_tput_val})" if gw_tput_val else "External ingress traffic rate increased significantly"
+            lat_chain = f"Gateway latency rose under peak concurrent client connections ({gw_lat_val})" if gw_lat_val else "Gateway latency rose under peak concurrent client connections"
+
             hypotheses.append(
                 HypothesisDraft(
                     cause_code=RootCauseCode.TRAFFIC_SURGE,
                     summary="Unprecedented external traffic surge is overwhelming the ingress gateway.",
                     causal_chain=[
-                        "External ingress traffic rate increased significantly",
-                        "Gateway latency rose under peak concurrent client connections",
+                        tput_chain,
+                        lat_chain,
                     ],
                     supporting_evidence_ids=traffic_support_ids,
                     opposing_evidence_ids=[],
@@ -552,7 +600,10 @@ class FakeGeminiProvider:
             )
 
         if db_cap_support_ids:
-            db_synth = self._fmt_obs(self._find_obs(evidence_ledger, "response_time", "database", scope="synthetic_probe") or self._find_obs(evidence_ledger, "synthetic", "database"), "<2ms")
+            db_synth = self._find_semantic_obs(evidence_ledger, component="database", dimension="latency", scope="synthetic_probe")
+            db_synth_val = self._fmt_obs_val(db_synth)
+            synth_desc = f"Direct synthetic probe responds in {db_synth_val} with healthy CPU, opposing database capacity degradation." if (db_cap_oppose_ids and db_synth_val) else "Primary database compute resource exhaustion."
+
             hypotheses.append(
                 HypothesisDraft(
                     cause_code=RootCauseCode.DATABASE_CAPACITY_DEGRADATION,
@@ -563,9 +614,7 @@ class FakeGeminiProvider:
                     ],
                     supporting_evidence_ids=db_cap_support_ids,
                     opposing_evidence_ids=db_cap_oppose_ids,
-                    unresolved_uncertainties=[
-                        f"Direct synthetic probe responds in {db_synth} with healthy CPU, indicating DB engine is not fundamentally degraded." if db_cap_oppose_ids else "Primary database compute resource exhaustion.",
-                    ],
+                    unresolved_uncertainties=[synth_desc],
                 )
             )
 
@@ -635,11 +684,16 @@ class FakeGeminiProvider:
         top_hyp_name = top_hyp.name if top_hyp else "Primary Cause"
 
         if top_hyp and top_hyp.cause_code == RootCauseCode.DATABASE_INDEX_REGRESSION:
-            db_query_lat = self._fmt_obs(self._find_obs(evidence_ledger, "query_latency", "database") or self._find_obs(evidence_ledger, "latency", "database"), "1850ms")
-            db_synth = self._fmt_obs(self._find_obs(evidence_ledger, "response_time", "database", scope="synthetic_probe") or self._find_obs(evidence_ledger, "synthetic", "database"), "1.5ms")
+            db_query_lat = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="database", dimension="latency", scope="workload"))
+            db_synth = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="database", dimension="latency", scope="synthetic_probe"))
+            scan_rate = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="database", dimension="query_efficiency"))
+            lat_str = f" ({db_query_lat})" if db_query_lat else ""
+            scan_str = f" ({scan_rate})" if scan_rate else ""
+            synth_str = f" in {db_synth}" if db_synth else " normally"
+
             contradiction_text = (
-                f"Workload telemetry indicated high database query latency on search endpoints ({db_query_lat}) and elevated table scan rates, "
-                f"while direct synthetic probes showed the database engine responding in {db_synth}. This scope tension is explained by "
+                f"Workload telemetry indicated high database query latency on search endpoints{lat_str} and elevated table scan rates{scan_str}, "
+                f"while direct synthetic probes showed the database engine responding{synth_str}. This scope tension is explained by "
                 "the dropped composite index: the database hardware is healthy, but queries filtering on unindexed columns "
                 "must perform expensive full table scans."
             )
@@ -648,11 +702,16 @@ class FakeGeminiProvider:
                 "but does not resolve the missing database index. Rebuilding the index concurrently cures the root cause with zero data loss."
             )
         elif top_hyp and top_hyp.cause_code == RootCauseCode.TRAFFIC_SURGE:
-            gw_lat = self._fmt_obs(self._find_obs(evidence_ledger, "latency", "api_gateway"), "3100ms")
-            gw_tps = self._fmt_obs(self._find_obs(evidence_ledger, "throughput", "api_gateway"), "12,500 req/sec")
+            gw_lat = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="api_gateway", dimension="latency", scope="workload"))
+            gw_tput = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="api_gateway", dimension="throughput", scope="workload"))
+            db_synth = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="database", dimension="latency", scope="synthetic_probe"))
+            lat_str = f" ({gw_lat})" if gw_lat else ""
+            tput_str = f" ({gw_tput})" if gw_tput else ""
+            synth_desc = f"with healthy response times ({db_synth})" if db_synth else "with fast response times"
+
             contradiction_text = (
-                f"Workload telemetry captured elevated API Gateway p99 latency ({gw_lat}) and high throughput ({gw_tps}), "
-                "while synthetic health probes and backend database metrics showed fast response times (<2ms). This scope tension "
+                f"Workload telemetry captured elevated API Gateway p99 latency{lat_str} and high throughput{tput_str}, "
+                f"while synthetic health probes and backend database metrics showed {synth_desc}. This scope tension "
                 "demonstrates that backend databases and caches are healthy, but ingress traffic volume exceeds gateway capacity."
             )
             rejection_text = (
@@ -660,12 +719,16 @@ class FakeGeminiProvider:
                 "Applying gateway rate limiting and load shedding immediately protects backend services from cascading failure."
             )
         elif top_hyp and top_hyp.cause_code == RootCauseCode.CACHE_NODE_FAILURE:
-            db_pool = self._fmt_obs(self._find_obs(evidence_ledger, "pool_saturation", "database"), "88%")
-            db_synth = self._fmt_obs(self._find_obs(evidence_ledger, "response_time", "database", scope="synthetic_probe"), "1.9ms")
-            cache_avail = self._fmt_obs(self._find_obs(evidence_ledger, "availability", "cache"), "0%")
+            db_pool = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="database", scope="workload", signals={"connection_pool_load_pct", "database_pool_saturation", "pool_saturation"}))
+            db_synth = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="database", dimension="latency", scope="synthetic_probe"))
+            cache_avail = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="cache", dimension="availability"))
+            pool_str = f" ({db_pool})" if db_pool else ""
+            synth_str = f" ({db_synth})" if db_synth else ""
+            avail_desc = f"{cache_avail} cache cluster availability" if cache_avail else "severely degraded cache availability"
+
             contradiction_text = (
-                f"Workload metrics showed high database connection pool saturation ({db_pool}), while direct synthetic query probes "
-                f"confirmed the database engine is healthy ({db_synth}). This scope tension is explained by {cache_avail} cache cluster availability: "
+                f"Workload metrics showed high database connection pool saturation{pool_str}, while direct synthetic query probes "
+                f"confirmed the database engine is healthy{synth_str}. This scope tension is explained by {avail_desc}: "
                 "the database is forced to handle 100% unbuffered raw query traffic because the cache nodes crashed."
             )
             rejection_text = (
@@ -673,11 +736,14 @@ class FakeGeminiProvider:
                 "and permanently relieves downstream database pressure."
             )
         elif top_hyp and top_hyp.cause_code == RootCauseCode.REPLICA_LAG:
-            rep_lag = self._fmt_obs(self._find_obs(evidence_ledger, "replica_lag", "database"), "185s")
-            db_synth = self._fmt_obs(self._find_obs(evidence_ledger, "response_time", "database", scope="synthetic_probe"), "1.6ms")
+            rep_lag = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="database", dimension="freshness"))
+            db_synth = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="database", dimension="latency", scope="synthetic_probe"))
+            synth_str = f" ({db_synth})" if db_synth else ""
+            lag_desc = f"{rep_lag} replication lag" if rep_lag else "significant replication lag"
+
             contradiction_text = (
                 f"Workload telemetry indicated stale read data and elevated query latency on read endpoints, while direct synthetic probes "
-                f"on the primary database showed healthy response times ({db_synth}). This scope tension is explained by {rep_lag} replication lag "
+                f"on the primary database showed healthy response times{synth_str}. This scope tension is explained by {lag_desc} "
                 "on read replicas during heavy batch ingestion."
             )
             rejection_text = (
@@ -685,23 +751,34 @@ class FakeGeminiProvider:
                 "allows the replication stream to catch up safely."
             )
         elif top_hyp and top_hyp.cause_code == RootCauseCode.DATABASE_CAPACITY_DEGRADATION:
-            db_pool = self._fmt_obs(self._find_obs(evidence_ledger, "pool_saturation", "database"), "99.4%")
+            db_pool = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="database", scope="workload", signals={"connection_pool_load_pct", "database_pool_saturation", "pool_saturation"}))
+            gw_lat = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="api_gateway", dimension="latency", scope="workload"))
+            pool_desc = f"{db_pool} database connection pool saturation" if db_pool else "saturated database connection pools"
+            gw_desc = f"elevated API Gateway p99 latency ({gw_lat})" if gw_lat else "elevated API Gateway p99 latency"
+
             contradiction_text = (
-                f"Workload telemetry showed {db_pool} database connection pool saturation and elevated API Gateway p99 latency, "
+                f"Workload telemetry showed {pool_desc} and {gw_desc}, "
                 "while synthetic gateway health probes responded normally. This scope tension confirms the primary database compute capacity is completely exhausted."
             )
             rejection_text = (
                 f"{top_alternative.name} cannot recover an exhausted primary instance. Failing over to a standby replica restores capacity."
             )
         else:
-            db_pool = self._fmt_obs(self._find_obs(evidence_ledger, "pool_saturation", "database"), "92%")
-            db_synth = self._fmt_obs(self._find_obs(evidence_ledger, "response_time", "database", scope="synthetic_probe"), "1.8ms")
-            q_depth = self._fmt_obs(self._find_obs(evidence_ledger, "queue_depth", "message_queue") or self._find_obs(evidence_ledger, "unconsumed", "message_queue"), "42,000-message")
-            miss_rate = self._fmt_obs(self._find_obs(evidence_ledger, "cache_miss_rate", "cache") or self._find_obs(evidence_ledger, "miss_rate", "cache"), "65.8% misses")
+            db_pool = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="database", scope="workload", signals={"connection_pool_load_pct", "database_pool_saturation", "pool_saturation"}))
+            db_synth = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="database", dimension="latency", scope="synthetic_probe"))
+            q_depth = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="message_queue", dimension="backlog"))
+            cache_miss = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="cache", signals={"cache_miss_rate", "miss_rate"}))
+            cache_hit = self._fmt_obs_val(self._find_semantic_obs(evidence_ledger, component="cache", dimension="availability"))
+
+            pool_desc = f"connection pool saturation ({db_pool})" if db_pool else "elevated connection pool saturation"
+            synth_desc = f"in {db_synth}" if db_synth else "promptly"
+            backlog_desc = f"the {q_depth} invalidation queue backlog" if q_depth else "an invalidation queue backlog"
+            cache_detail = f" (miss rate {cache_miss})" if cache_miss else (f" (hit ratio {cache_hit})" if cache_hit else "")
+
             contradiction_text = (
-                f"Workload telemetry indicated high database latency and connection pool saturation ({db_pool}), while direct synthetic "
-                f"probes showed the database responding in {db_synth} with healthy CPU. This scope tension is explained by the {q_depth} "
-                f"invalidation queue backlog: stale cache keys forced high miss rates ({miss_rate}) directly to the database. "
+                f"Workload telemetry indicated high database latency and {pool_desc}, while direct synthetic "
+                f"probes showed the database responding {synth_desc} with healthy CPU. This scope tension is explained by {backlog_desc}: "
+                f"stale cache keys forced high miss rates{cache_detail} directly to the database. "
                 "The database is functioning normally but overwhelmed by upstream invalidation failure."
             )
             rejection_text = (
@@ -770,7 +847,10 @@ class GeminiProvider:
         )
         self.openrouter_api_key: Optional[str] = openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
         self.openrouter_model: str = (
-            openrouter_model or os.getenv("OPENROUTER_FALLBACK_MODEL") or "google/gemini-2.0-flash-001"
+            openrouter_model
+            or os.getenv("OPENROUTER_MODEL")
+            or os.getenv("OPENROUTER_FALLBACK_MODEL")
+            or "google/gemini-2.0-flash-001"
         )
         self.openrouter_base_url: str = (
             openrouter_base_url or os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
