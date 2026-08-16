@@ -90,7 +90,7 @@ How the **Web Dashboard**, **Decision Engine**, **AI Assistants**, and **Monitor
 ```mermaid
 flowchart TB
     subgraph UI["🖥️ Web Dashboard (React)"]
-        Dash["Observability Dashboard<br/><i>Timeline, Clue Inspector, Repair Matrix & Safety Gate</i>"]
+        Dash["Observability Dashboard<br/><i>Timeline, Clue Inspector,<br/>Repair Matrix & Safety Gate</i>"]
     end
 
     subgraph Backend["⚙️ Faultline Decision Engine (Python)"]
@@ -137,29 +137,29 @@ The 6 core stages of an automated investigation:
 ```mermaid
 flowchart TD
     subgraph S1["1. Incident Alert"]
-        Alert["🚨 Outage Detected<br/><i>e.g. High latency alerts & database timeouts</i>"]
+        Alert["🚨 Outage Detected<br/><i>e.g. High latency alerts<br/>and database timeouts</i>"]
     end
 
     subgraph S2["2. Collect Clues"]
-        Telemetry["📊 Traffic Telemetry<br/><i>e.g. Slow customer requests<br/>and degraded API latency</i>"]
-        Probes["🩺 Direct Health Tests<br/><i>e.g. Point-in-time ping tests<br/>to database & cache</i>"]
-        Logs["📜 Background Logs<br/><i>e.g. Worker process status<br/>and queue message depth</i>"]
+        Telemetry["📊 Traffic Telemetry<br/><i>e.g. Slow user requests<br/>and degraded latency</i>"]
+        Probes["🩺 Direct Health Tests<br/><i>e.g. Fast ping tests<br/>to database & cache</i>"]
+        Logs["📜 Background Logs<br/><i>e.g. Worker crashes<br/>and queue depth</i>"]
     end
 
     subgraph S3["3. Spot Contradictions"]
-        Tension["⚖️ Reconcile Conflicting Clues<br/><i>e.g. Why direct test is 1.8ms (OK) while customer queries stall (92% load)</i>"]
+        Tension["⚖️ Reconcile Conflicting Clues<br/><i>e.g. Direct test is 1.8ms (OK) while<br/>customer queries stall (92% load)</i>"]
     end
 
     subgraph S4["4. Find the Root Cause"]
-        Causes["🔍 Score Suspected Causes<br/><i>Weigh clue reliability, freshness, and direct causal connection</i>"]
+        Causes["🔍 Score Suspected Causes<br/><i>Weigh clue reliability, freshness,<br/>and direct causal connection</i>"]
     end
 
     subgraph S5["5. Compare Solutions"]
-        Repairs["🎯 Weigh Competing Fixes<br/><i>Balance relief speed, long-term safety, and system risk</i>"]
+        Repairs["🎯 Weigh Competing Fixes<br/><i>Balance relief speed, long-term<br/>safety, and system risk</i>"]
     end
 
     subgraph S6["6. Safety Check & Human Decision"]
-        Approval["🛡️ Safety Rules & Human Sign-Off<br/><i>Code verifies all rules; engineer makes the final decision</i>"]
+        Approval["🛡️ Safety Rules & Human Sign-Off<br/><i>Code verifies all rules;<br/>engineer makes final decision</i>"]
     end
 
     Alert --> Telemetry
