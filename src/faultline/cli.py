@@ -136,7 +136,7 @@ def main() -> None:
         scenario_id = getattr(args, "scenario", "cache_invalidation_lag")
         api_key = os.getenv("GEMINI_API_KEY")
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
-        is_dummy_key = bool(api_key and (api_key.startswith("AQ.") or api_key.startswith("dummy")))
+        is_dummy_key = bool(api_key and (api_key.lower().startswith("dummy") or "your-api-key" in api_key.lower()))
         use_offline = getattr(args, "offline", False) or os.getenv("FAULTLINE_OFFLINE", "").lower() in ("true", "1")
         provider: LLMProviderProtocol
         if use_offline or (not api_key and not openrouter_key) or (is_dummy_key and not openrouter_key):

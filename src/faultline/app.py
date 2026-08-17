@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         gemini_key = os.getenv("GEMINI_API_KEY")
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
         is_offline = os.getenv("FAULTLINE_OFFLINE", "").lower() in ("1", "true", "yes")
-        is_dummy_key = bool(gemini_key and (gemini_key.startswith("AQ.") or gemini_key.startswith("dummy")))
+        is_dummy_key = bool(gemini_key and (gemini_key.lower().startswith("dummy") or "your-api-key" in gemini_key.lower()))
         provider: LLMProviderProtocol
         if (gemini_key or openrouter_key) and os.getenv("FAULTLINE_ENV") != "test" and not is_offline and not is_dummy_key:
             provider = GeminiProvider(api_key=gemini_key, openrouter_api_key=openrouter_key)
